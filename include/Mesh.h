@@ -1,7 +1,7 @@
 #pragma once
 #include "Node.h"
 #include "Nif.h"
-#include "MeshRenderer.h"
+#include "MeshRenderingFrameworkAPI.h"
 class Mesh {
 private:
     static inline uint64_t autoIncrement = 0;
@@ -13,7 +13,7 @@ public:
 
     Nif* nif;
     Node* node;
-    MeshRenderer::Internal::IMesh* mesh;
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh;
 
     void ApplyTransform();
 };

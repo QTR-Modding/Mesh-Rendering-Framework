@@ -1,5 +1,5 @@
 #pragma once
-#include "MeshRenderer.h"
+#include "MeshRenderingFrameworkAPI.h"
 namespace MeshMath {
     inline RE::NiPoint3 ToWorldPosition(RE::NiPoint2 position) {
         auto screenSize = RE::BSGraphics::Renderer::GetScreenSize();
@@ -36,7 +36,7 @@ namespace MeshMath {
         return RE::NiPoint2((position.x / (float)screenSize.width) * 2.0f - 1.0f, (position.y / (float)screenSize.height) * 2.0f - 1.0f);
     }
 
-    inline float ScaleToRect(MeshRenderer::Internal::IMesh* mesh, RE::NiPoint2 rectSize) {
+    inline float ScaleToRect(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, RE::NiPoint2 rectSize) {
         RE::NiPoint2 screenMin = WorldToScreen(mesh->boundMin);
         RE::NiPoint2 screenMax = WorldToScreen(mesh->boundMax);
 

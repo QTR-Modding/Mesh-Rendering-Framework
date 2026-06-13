@@ -19,7 +19,7 @@ static void CreateMenuLight(RE::INTERFACE_LIGHT_SCHEME scheme) {
     func(light, scheme, object);
 }
 
-MeshRenderer::Internal::IMesh* RenderManager::AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height) {
+MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height) {
     std::unique_lock lock(mutex);
     if (auto mesh = new Mesh(nifPath, width, height)) {
         meshes[mesh->mesh->id] = mesh;
@@ -374,7 +374,7 @@ void RenderManager::Init(ID3D11Device* device, ID3D11DeviceContext* context) {
     }
 }
 
-void RenderManager::Save(MeshRenderer::Internal::IMesh* mesh, const char* filename) {
+void RenderManager::Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename) {
     std::filesystem::path path(filename);
 
     ID3D11Resource* resource = nullptr;

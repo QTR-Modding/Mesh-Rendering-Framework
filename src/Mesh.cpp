@@ -8,7 +8,7 @@ void Mesh::Fit(RE::NiPoint2 position, RE::NiPoint2 scale) {
 }
 Mesh::Mesh(const char* nifPath, uint32_t width, uint32_t height) {
     node = new Node();
-    mesh = new MeshRenderer::Internal::IMesh();
+    mesh = new MeshRenderingFrameworkAPI::Internal::IMesh();
     mesh->width = width;
     mesh->height = height;
     mesh->id = autoIncrement++;

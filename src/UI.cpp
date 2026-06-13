@@ -1,6 +1,6 @@
 ﻿#include "UI.h"
 #include "RenderManager.h"
-#include "MeshRenderer.h"
+#include "MeshRenderingFrameworkAPI.h"
 void UI::Register() {
     if (!SKSEMenuFramework::IsInstalled()) {
         return;

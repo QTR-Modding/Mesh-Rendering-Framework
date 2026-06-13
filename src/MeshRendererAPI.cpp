@@ -1,7 +1,7 @@
 #include "MeshRendererAPI.h"
 #include "RenderManager.h"
 
-MeshRenderer::Internal::IMesh* IMesh_CreateByNifPath(const char* nifPath, uint32_t width, uint32_t height) { 
+MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNifPath(const char* nifPath, uint32_t width, uint32_t height) { 
     std::map<std::string, RenderTarget*>::iterator renderTargetIt;
     {
         std::shared_lock lock(RenderManager::mutex);
@@ -22,7 +22,7 @@ MeshRenderer::Internal::IMesh* IMesh_CreateByNifPath(const char* nifPath, uint32
 }
 
 
-void IMesh_Delete(MeshRenderer::Internal::IMesh* mesh) { 
+void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh) { 
      std::unique_lock lock(RenderManager::mutex);
 
     std::map<std::string, RenderTarget*>::iterator renderTargetIt;
@@ -45,5 +45,5 @@ void IMesh_Delete(MeshRenderer::Internal::IMesh* mesh) {
 
 }
 
-FUNCTION_PREFIX void IMesh_Save(MeshRenderer::Internal::IMesh* mesh, const char* filePath) { 
+FUNCTION_PREFIX void IMesh_Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filePath) { 
     RenderManager::Save(mesh, filePath); }

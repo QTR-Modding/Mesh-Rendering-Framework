@@ -1,7 +1,7 @@
 #pragma once
 #include <shared_mutex>
 #include "Mesh.h"
-#include "MeshRenderer.h"
+#include "MeshRenderingFrameworkAPI.h"
 
 struct RenderTarget {
     ID3D11Texture2D* texture = nullptr;
@@ -49,14 +49,14 @@ class RenderManager {
 
 public:
 
-    static MeshRenderer::Internal::IMesh* AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height);
+    static MeshRenderingFrameworkAPI::Internal::IMesh* AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height);
 
     static void Render();
     static bool GetIsRendering();
     static void InitRenderTarget(RenderTarget* target);
     static void Init(ID3D11Device* device, ID3D11DeviceContext* context);
 
-    static void Save(MeshRenderer::Internal::IMesh* mesh, const char* filename);
+    static void Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename);
 
     static inline std::map<std::string, RenderTarget*> renderTarget;
     static inline std::map<uint64_t, Mesh*> meshes;

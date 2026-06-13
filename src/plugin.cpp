@@ -1,6 +1,6 @@
 #include "Plugin.h"
 #include "Hooks.h"
-#include "MeshRenderer.h"
+#include "MeshRenderingFrameworkAPI.h"
 
 void OnMessage(SKSE::MessagingInterface::Message* message) {
 

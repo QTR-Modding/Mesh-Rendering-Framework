@@ -6,7 +6,7 @@
     #include "SKSEMenuFramework.h"
 #endif
 
-namespace MeshRenderer {
+namespace MeshRenderingFrameworkAPI {
 
     namespace Internal {
         class IMesh {
