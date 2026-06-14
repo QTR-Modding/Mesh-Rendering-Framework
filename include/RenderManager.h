@@ -59,6 +59,6 @@ public:
     static void Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename);
 
     static inline std::map<std::string, RenderTarget*> renderTarget;
-    static inline std::map<uint64_t, Mesh*> meshes;
+    static inline std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*> meshes;
     static inline std::shared_mutex mutex;
 };

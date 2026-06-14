@@ -30,9 +30,11 @@ static void CreateMenuLight(RE::INTERFACE_LIGHT_SCHEME scheme) {
 MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height) {
     std::unique_lock lock(mutex);
     if (auto mesh = new Mesh(nifPath, width, height)) {
-        meshes[mesh->mesh->id] = mesh;
+        meshes[mesh->mesh] = mesh;
         return mesh->mesh;
     }
+
+    return nullptr;
 }
 
 bool RenderManager::CopyRenderTargetToMesh(Mesh* mesh, RenderTarget* target) {
@@ -141,7 +143,7 @@ void RenderManager::Render() {
         if (!renderTarget.contains(res)) {
             auto t = new RenderTarget();
             t->width = meshes[0]->mesh->width;
-            t->height = meshes[0]->mesh->width;
+            t->height = meshes[0]->mesh->height;
             renderTarget[res] = t;
         }
 
@@ -375,6 +377,8 @@ void RenderManager::InitRenderTarget(RenderTarget* target)
         target->texture = nullptr;
         return;
     }
+
+    target->initialized  = true;
     return;
 }
 
@@ -402,9 +406,15 @@ void RenderManager::Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const
         resource->Release();
         return;
     }
-    GUID container = GUID_ContainerFormatPng;
-    const std::wstring wideName(filename, filename + std::strlen(filename));
-    DirectX::SaveToWICFile(*image.GetImage(0, 0, 0), DirectX::WIC_FLAGS_FORCE_SRGB, container, wideName.c_str());
+
+    const auto wideName = path.wstring();
+
+    if (_wcsicmp(path.extension().c_str(), L".dds") == 0) {
+        DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(), image.GetMetadata(), DirectX::DDS_FLAGS_NONE, wideName.c_str());
+    } else {
+        DirectX::SaveToWICFile(*image.GetImage(0, 0, 0), DirectX::WIC_FLAGS_FORCE_SRGB, GUID_ContainerFormatPng, wideName.c_str());
+    }
+
     resource->Release();
 }
 
