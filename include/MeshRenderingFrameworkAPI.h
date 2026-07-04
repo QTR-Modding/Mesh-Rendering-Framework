@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #define ENABLE_MENU_FRAMEWORK
 
 #ifdef ENABLE_MENU_FRAMEWORK
@@ -43,6 +45,14 @@ namespace MeshRenderingFrameworkAPI {
                 return nullptr;
             }
             return function(nifPath, width, height);
+        }
+
+        inline IMesh* __stdcall IMesh_CreateByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
+            auto function = GetFunction<decltype(&IMesh_CreateByNiAVObjectList)>("IMesh_CreateByNiAVObjectList");
+            if (!function) {
+                return nullptr;
+            }
+            return function(objects, objectCount, width, height);
         }
 
         inline void __stdcall IMesh_Delete(IMesh* mesh) {
@@ -135,6 +145,14 @@ namespace MeshRenderingFrameworkAPI {
             return nullptr;
         }
 
+        inline IMesh* CreateFromNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
+            if (!objects || objectCount == 0) {
+                return nullptr;
+            }
+
+            return IMesh_CreateByNiAVObjectList(objects, objectCount, width, height);
+        }
+
     }
 
     class Mesh {
@@ -221,7 +239,11 @@ namespace MeshRenderingFrameworkAPI {
             }
             mesh->alwaysUpdate = true;
         }
-        ~Mesh() { Internal::IMesh_Delete(mesh); }
+        ~Mesh() {
+            if (mesh) {
+                Internal::IMesh_Delete(mesh);
+            }
+        }
 
         Mesh(RE::TESBoundObject* base, uint32_t width, uint32_t height) {
             this->base = base;
@@ -239,6 +261,14 @@ namespace MeshRenderingFrameworkAPI {
         Mesh(const char* path, uint32_t width, uint32_t height) {
             base = nullptr;
             mesh = Internal::IMesh_CreateByNifPath(path, width, height);
+        }
+        Mesh(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
+            base = nullptr;
+            mesh = Internal::CreateFromNiAVObjectList(objects, objectCount, width, height);
+        }
+        Mesh(const std::vector<RE::NiAVObject*>& objects, uint32_t width, uint32_t height) {
+            base = nullptr;
+            mesh = Internal::CreateFromNiAVObjectList(objects.data(), static_cast<uint32_t>(objects.size()), width, height);
         }
     };
 
@@ -262,6 +292,10 @@ namespace MeshRenderingFrameworkAPI {
         OrbitMesh(RE::FormID id, uint32_t width, uint32_t height) : Mesh(id, width, height) { ScaleUp(0.8f); }
 
         OrbitMesh(const char* path, uint32_t width, uint32_t height) : Mesh(path, width, height) { ScaleUp(0.8f); }
+
+        OrbitMesh(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) : Mesh(objects, objectCount, width, height) { ScaleUp(0.8f); }
+
+        OrbitMesh(const std::vector<RE::NiAVObject*>& objects, uint32_t width, uint32_t height) : Mesh(objects, width, height) { ScaleUp(0.8f); }
 
         void Render(const char* name) {
             if (GetResourceView()) {

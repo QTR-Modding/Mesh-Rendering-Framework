@@ -6,28 +6,75 @@ void Mesh::Fit(RE::NiPoint2 position, RE::NiPoint2 scale) {
     mesh->position = MeshMath::ToWorldPosition(MeshMath::PositionToScreenRatio(position + scale / 2));
     mesh->scale = MeshMath::ScaleToRect(mesh, scale);
 }
-Mesh::Mesh(const char* nifPath, uint32_t width, uint32_t height) {
+
+void Mesh::Initialize(uint32_t width, uint32_t height) {
     node = new Node();
+    nif = nullptr;
+    objectListNode = nullptr;
     mesh = new MeshRenderingFrameworkAPI::Internal::IMesh();
     mesh->width = width;
     mesh->height = height;
     mesh->id = autoIncrement++;
-    nif = Nif::Create(nifPath, true);
-    if (!nif) {
+}
+
+void Mesh::AttachAndFit(RE::NiAVObject* object, RE::NiAVObject* objectToCenter, uint32_t width, uint32_t height) {
+    if (!object || !objectToCenter) {
         return;
     }
-    node->node->AttachChild(nif->obj, false);
+
+    node->node->AttachChild(object, false);
     node->Update();
 
-    Geometry geo(nif->obj);
-    auto bound = geo.GetBoundingBox({0, 0, 0}, nif->obj->local.scale);
+    Geometry geo(object);
+    auto bound = geo.GetBoundingBox({0, 0, 0}, object->local.scale);
     mesh->boundMin = bound.first;
     mesh->boundMax = bound.second;
     //logger::info("min {} {} {}", mesh->boundMin.x, mesh->boundMin.y, mesh->boundMin.z);
     //logger::info("max {} {} {}", mesh->boundMax.x, mesh->boundMax.y, mesh->boundMax.z);
     auto center = (bound.first + bound.second) * 0.5;
-    nif->obj->local.translate -= center;
+    objectToCenter->local.translate -= center;
     Fit(RE::NiPoint2{0.f, 0.f}, RE::NiPoint2{(float)width, (float)height});
+}
+
+Mesh::Mesh(const char* nifPath, uint32_t width, uint32_t height) {
+    Initialize(width, height);
+
+    nif = Nif::Create(nifPath, true);
+    if (!nif) {
+        return;
+    }
+
+    AttachAndFit(nif->obj, nif->obj, width, height);
+}
+
+Mesh::Mesh(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
+    Initialize(width, height);
+
+    if (!objects || objectCount == 0) {
+        return;
+    }
+
+    objectListNode = new Node();
+    uint32_t attachedObjects = 0;
+
+    for (uint32_t i = 0; i < objectCount; ++i) {
+        auto object = objects[i];
+        if (!object) {
+            continue;
+        }
+        auto clone = static_cast<RE::NiAVObject*>(object->Clone());
+        if (!clone) {
+            continue;
+        }
+        objectListNode->node->AttachChild(clone, false);
+        attachedObjects++;
+    }
+
+    if (attachedObjects == 0) {
+        return;
+    }
+
+    AttachAndFit(objectListNode->obj, objectListNode->obj, width, height);
 }
 
 Mesh::~Mesh() {
@@ -44,6 +91,7 @@ Mesh::~Mesh() {
     }
 
     delete nif;
+    delete objectListNode;
     delete node;
     delete mesh;
 }

@@ -15,7 +15,25 @@ static void ReleaseIfExists(T*& resource) {
 static void RenderMeshOveraly(RE::INTERFACE_LIGHT_SCHEME scheme) {
     using func_t = void(RE::UI3DSceneManager*, RE::INTERFACE_LIGHT_SCHEME, RE::NiCamera*, bool);
     const REL::Relocation<func_t> func{REL::RelocationID(51855, 52727)};
+
+    RE::ImageSpaceManager* imageSpaceManager = RE::ImageSpaceManager::GetSingleton();
+    RE::ImageSpaceManager::UNK_BSImagespaceShaderISTemporalAA* temporalAA = nullptr;
+    bool wasTAAEnabled = false;
+
+    if (imageSpaceManager) {
+        temporalAA = imageSpaceManager->GetRuntimeData().BSImagespaceShaderISTemporalAA;
+    }
+
+    if (temporalAA) {
+        wasTAAEnabled = temporalAA->taaEnabled;
+        temporalAA->taaEnabled = false;
+    }
+
     func(RE::UI3DSceneManager::GetSingleton(), scheme, nullptr, false);
+
+    if (temporalAA) {
+        temporalAA->taaEnabled = wasTAAEnabled;
+    }
 }
 
 static void CreateMenuLight(RE::INTERFACE_LIGHT_SCHEME scheme) {
@@ -30,6 +48,16 @@ static void CreateMenuLight(RE::INTERFACE_LIGHT_SCHEME scheme) {
 MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height) {
     std::unique_lock lock(mutex);
     if (auto mesh = new Mesh(nifPath, width, height)) {
+        meshes[mesh->mesh] = mesh;
+        return mesh->mesh;
+    }
+
+    return nullptr;
+}
+
+MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
+    std::unique_lock lock(mutex);
+    if (auto mesh = new Mesh(objects, objectCount, width, height)) {
         meshes[mesh->mesh] = mesh;
         return mesh->mesh;
     }

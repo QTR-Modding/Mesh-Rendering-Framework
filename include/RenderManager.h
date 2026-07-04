@@ -50,6 +50,7 @@ class RenderManager {
 public:
 
     static MeshRenderingFrameworkAPI::Internal::IMesh* AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height);
+    static MeshRenderingFrameworkAPI::Internal::IMesh* AddByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height);
 
     static void Render();
     static bool GetIsRendering();
