@@ -1,8 +1,13 @@
 #include "RenderManager.h"
+#include "RE/R/RendererShadowState.h"
 #include <d3d11.h>
 #include <DirectXTex.h>
 #include <wincodec.h>
+
+#include <array>
+
 constexpr float cameraZ = 320;
+constexpr std::uint32_t rasterizerSlotCount = 16;
 
 template <class T>
 static void ReleaseIfExists(T*& resource) {
@@ -10,6 +15,120 @@ static void ReleaseIfExists(T*& resource) {
         resource->Release();
         resource = nullptr;
     }
+}
+
+struct RasterizerStateSnapshot {
+    std::array<REX::W32::D3D11_VIEWPORT, rasterizerSlotCount> viewports{};
+    std::array<REX::W32::D3D11_RECT, rasterizerSlotCount> scissorRects{};
+    std::uint32_t viewportCount{rasterizerSlotCount};
+    std::uint32_t scissorRectCount{rasterizerSlotCount};
+};
+
+struct RendererShadowStateSnapshot {
+    RE::BSGraphics::RendererShadowState* shadowState{nullptr};
+    RE::BSGraphics::RendererShadowState::FLAT_RUNTIME_DATA data{};
+};
+
+static RasterizerStateSnapshot StoreRasterizerState(REX::W32::ID3D11DeviceContext* context) {
+    RasterizerStateSnapshot snapshot{};
+    context->RSGetViewports(&snapshot.viewportCount, snapshot.viewports.data());
+    context->RSGetScissorRects(&snapshot.scissorRectCount, snapshot.scissorRects.data());
+    return snapshot;
+}
+
+static void RestoreRasterizerState(REX::W32::ID3D11DeviceContext* context, const RasterizerStateSnapshot& snapshot) {
+    context->RSSetViewports(snapshot.viewportCount, snapshot.viewportCount > 0 ? snapshot.viewports.data() : nullptr);
+    context->RSSetScissorRects(snapshot.scissorRectCount, snapshot.scissorRectCount > 0 ? snapshot.scissorRects.data() : nullptr);
+}
+
+static void SetRenderTargetRasterizerState(REX::W32::ID3D11DeviceContext* context, const RenderTarget& target) {
+    if (target.width == 0 || target.height == 0) {
+        return;
+    }
+
+    const REX::W32::D3D11_VIEWPORT viewport{
+        0.0f,
+        0.0f,
+        static_cast<float>(target.width),
+        static_cast<float>(target.height),
+        0.0f,
+        1.0f
+    };
+    const REX::W32::D3D11_RECT scissorRect{
+        0,
+        0,
+        static_cast<std::int32_t>(target.width),
+        static_cast<std::int32_t>(target.height)
+    };
+
+    context->RSSetViewports(1, &viewport);
+    context->RSSetScissorRects(1, &scissorRect);
+}
+
+static RendererShadowStateSnapshot StoreRendererShadowState() {
+    RendererShadowStateSnapshot snapshot{};
+    snapshot.shadowState = RE::BSGraphics::RendererShadowState::GetSingleton();
+    if (snapshot.shadowState) {
+        snapshot.data = snapshot.shadowState->GetRuntimeData();
+    }
+    return snapshot;
+}
+
+static void RestoreRendererShadowState(const RendererShadowStateSnapshot& snapshot) {
+    if (snapshot.shadowState) {
+        snapshot.shadowState->GetRuntimeData() = snapshot.data;
+    }
+}
+
+static void SetRenderTargetShadowState(const RenderTarget& target) {
+    if (target.width == 0 || target.height == 0) {
+        return;
+    }
+
+    RE::BSGraphics::RendererShadowState* shadowState = RE::BSGraphics::RendererShadowState::GetSingleton();
+    if (!shadowState) {
+        return;
+    }
+
+    RE::BSGraphics::RendererShadowState::FLAT_RUNTIME_DATA& data = shadowState->GetRuntimeData();
+    data.viewPort = D3D11_VIEWPORT{
+        0.0f,
+        0.0f,
+        static_cast<float>(target.width),
+        static_cast<float>(target.height),
+        0.0f,
+        1.0f
+    };
+    data.depthStencil = static_cast<std::uint32_t>(RE::RENDER_TARGETS_DEPTHSTENCIL::kNONE);
+    data.depthStencilSlice = 0;
+    data.setDepthStencilMode = RE::BSGraphics::SRTM_RESTORE;
+    data.stateUpdateFlags |= RE::BSGraphics::DIRTY_RENDERTARGET;
+    data.stateUpdateFlags |= RE::BSGraphics::DIRTY_VIEWPORT;
+    data.stateUpdateFlags |= RE::BSGraphics::DIRTY_DEPTH_MODE;
+    data.stateUpdateFlags |= RE::BSGraphics::DIRTY_DEPTH_STENCILREF_MODE;
+}
+
+static void SetRenderTargetCameraFrustum(RE::NiCamera& camera, const RenderTarget& target) {
+    if (target.width == 0 || target.height == 0) {
+        return;
+    }
+
+    RE::NiFrustum& frustum = camera.GetRuntimeData2().viewFrustum;
+    float horizontalSpan = frustum.fRight - frustum.fLeft;
+    if (horizontalSpan == 0.0f) {
+        return;
+    }
+
+    if (horizontalSpan < 0.0f) {
+        horizontalSpan = -horizontalSpan;
+    }
+
+    const float targetAspect = static_cast<float>(target.width) / static_cast<float>(target.height);
+    const float verticalSpan = horizontalSpan / targetAspect;
+    const float centerY = (frustum.fTop + frustum.fBottom) * 0.5f;
+
+    frustum.fTop = centerY + verticalSpan * 0.5f;
+    frustum.fBottom = centerY - verticalSpan * 0.5f;
 }
 
 static void RenderMeshOveraly(RE::INTERFACE_LIGHT_SCHEME scheme) {
@@ -138,7 +257,8 @@ void RenderManager::Render() {
         ui->IsMenuOpen(RE::BookMenu::MENU_NAME) ||
         ui->IsMenuOpen(RE::MapMenu::MENU_NAME) ||
         ui->IsMenuOpen(RE::MistMenu::MENU_NAME) ||
-        ui->IsMenuOpen(RE::MainMenu::MENU_NAME)) {
+        ui->IsMenuOpen(RE::MainMenu::MENU_NAME) ||
+        ui->IsMenuOpen(RE::StatsMenu::MENU_NAME)) {
         return;
     }
 
@@ -206,10 +326,18 @@ void RenderManager::Render() {
         REX::W32::ID3D11DepthStencilView* oldBoundDSV = nullptr;
 
         context->OMGetRenderTargets(1, &oldBoundRTV, &oldBoundDSV);
+        const auto oldRasterizerState = StoreRasterizerState(context);
+        const auto oldRendererShadowState = StoreRendererShadowState();
+        const auto oldCameraFrustum = manager->camera->GetRuntimeData2().viewFrustum;
+        SetRenderTargetCameraFrustum(*manager->camera, *target);
 
-        auto* oldFramebufferRTV = framebuffer.RTV;
-
+        const auto oldFramebuffer = framebuffer;
+        framebuffer.texture = target->texture;
+        framebuffer.textureCopy = nullptr;
         framebuffer.RTV = target->renderTargetView;
+        framebuffer.SRV = target->SRV;
+        framebuffer.SRVCopy = nullptr;
+        framebuffer.UAV = nullptr;
 
         context->OMSetRenderTargets(1, &targetRTV, nullptr);
 
@@ -230,7 +358,11 @@ void RenderManager::Render() {
                 context->Begin(reinterpret_cast<REX::W32::ID3D11Query*>(renderQuery));
             }
 
+            SetRenderTargetRasterizerState(context, *target);
+            SetRenderTargetShadowState(*target);
             RenderMeshOveraly(RE::INTERFACE_LIGHT_SCHEME::kInventory);
+            SetRenderTargetRasterizerState(context, *target);
+            SetRenderTargetShadowState(*target);
             RenderMeshOveraly(RE::INTERFACE_LIGHT_SCHEME::kInventory);
             if (renderQuery) {
                 context->End(reinterpret_cast<REX::W32::ID3D11Query*>(renderQuery));
@@ -255,8 +387,11 @@ void RenderManager::Render() {
             }
         }
 
-        framebuffer.RTV = oldFramebufferRTV;
+        framebuffer = oldFramebuffer;
 
+        RestoreRendererShadowState(oldRendererShadowState);
+        manager->camera->GetRuntimeData2().viewFrustum = oldCameraFrustum;
+        RestoreRasterizerState(context, oldRasterizerState);
         context->OMSetRenderTargets(1, &oldBoundRTV, oldBoundDSV);
         ReleaseIfExists(oldBoundRTV);
         ReleaseIfExists(oldBoundDSV);
