@@ -3,8 +3,12 @@
 #include "MeshMath.h"
 #include "Geometry.h"
 void Mesh::Fit(RE::NiPoint2 position, RE::NiPoint2 scale) {
-    mesh->position = MeshMath::ToWorldPosition(MeshMath::PositionToScreenRatio(position + scale / 2));
-    mesh->scale = MeshMath::ScaleToRect(mesh, scale);
+    const RE::NiPoint2 renderSize{
+        static_cast<float>(mesh->width),
+        static_cast<float>(mesh->height)
+    };
+    mesh->position = MeshMath::ToWorldPosition(MeshMath::PositionToScreenRatio(position + scale / 2, renderSize), renderSize);
+    mesh->scale = MeshMath::ScaleToRect(mesh, scale, renderSize);
 }
 
 void Mesh::Initialize(uint32_t width, uint32_t height) {
