@@ -135,6 +135,7 @@ void RenderManager::Render() {
 
     auto ui = RE::UI::GetSingleton();
     if (ui->IsApplicationMenuOpen() ||
+        ui->IsMenuOpen(RE::LockpickingMenu::MENU_NAME) ||
         ui->IsMenuOpen(RE::BookMenu::MENU_NAME) ||
         ui->IsMenuOpen(RE::MapMenu::MENU_NAME) ||
         ui->IsMenuOpen(RE::MistMenu::MENU_NAME) ||
