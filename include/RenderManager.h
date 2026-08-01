@@ -31,7 +31,9 @@ struct RenderTarget {
 
 class RenderManager {
     static inline ID3D11Device* device;
-    static inline ID3D11DeviceContext* context;
+    static inline ID3D11DeviceContext* immediateContext;
+    static inline ID3D11DeviceContext* renderContext;
+    static inline ID3D11Query* completionQuery;
     static inline ID3D11VertexShader* vertexShader = nullptr;
     static inline ID3D11PixelShader* pixelShader = nullptr;
     static inline ID3D11InputLayout* inputLayout = nullptr;
@@ -52,17 +54,23 @@ class RenderManager {
     static void ReleasePipeline();
     static bool RenderMesh(Mesh* mesh, RenderTarget* target);
     static bool CopyRenderTargetToMesh(Mesh* mesh, RenderTarget* target);
+    static bool ExecuteCommands();
+    static bool RenderLocked(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+    static bool SaveLocked(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename);
+    static void DeleteLocked(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
 
 public:
 
     static MeshRenderingFrameworkAPI::Internal::IMesh* AddByNifPAth(const char* nifPath, uint32_t width, uint32_t height);
     static MeshRenderingFrameworkAPI::Internal::IMesh* AddByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height);
 
-    static void Render();
+    static bool Render(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+    static void RenderPending();
+    static void Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
     static void InitRenderTarget(RenderTarget* target);
-    static void Init(ID3D11Device* device, ID3D11DeviceContext* context);
+    static bool Init(ID3D11Device* device, ID3D11DeviceContext* context);
 
-    static void Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename);
+    static bool Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename);
 
     static inline std::map<std::string, RenderTarget*> renderTarget;
     static inline std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*> meshes;

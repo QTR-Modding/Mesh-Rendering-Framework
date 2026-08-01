@@ -13,8 +13,6 @@
 
 namespace
 {
-    constexpr std::uint32_t rasterizerSlotCount = 16;
-
     template <class T>
     void ReleaseResource(T*& resource)
     {
@@ -24,113 +22,19 @@ namespace
         }
     }
 
-    struct PipelineStateSnapshot {
-        ID3D11RenderTargetView* renderTarget = nullptr;
-        ID3D11DepthStencilView* depthStencilView = nullptr;
-        ID3D11BlendState* blendState = nullptr;
-        float blendFactor[4]{};
-        UINT sampleMask = 0;
-        ID3D11DepthStencilState* depthStencilState = nullptr;
-        UINT stencilReference = 0;
-        ID3D11RasterizerState* rasterizerState = nullptr;
-        std::array<D3D11_VIEWPORT, rasterizerSlotCount> viewports{};
-        UINT viewportCount = rasterizerSlotCount;
-        std::array<D3D11_RECT, rasterizerSlotCount> scissorRects{};
-        UINT scissorRectCount = rasterizerSlotCount;
-        ID3D11InputLayout* inputLayout = nullptr;
-        ID3D11Buffer* vertexBuffer = nullptr;
-        UINT vertexStride = 0;
-        UINT vertexOffset = 0;
-        ID3D11Buffer* indexBuffer = nullptr;
-        DXGI_FORMAT indexFormat = DXGI_FORMAT_UNKNOWN;
-        UINT indexOffset = 0;
-        D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-        ID3D11VertexShader* vertexShader = nullptr;
-        ID3D11PixelShader* pixelShader = nullptr;
-        ID3D11GeometryShader* geometryShader = nullptr;
-        ID3D11HullShader* hullShader = nullptr;
-        ID3D11DomainShader* domainShader = nullptr;
-        ID3D11Buffer* vertexConstantBuffer = nullptr;
-        ID3D11Buffer* pixelSceneConstantBuffer = nullptr;
-        ID3D11Buffer* pixelMaterialConstantBuffer = nullptr;
-        std::array<ID3D11ShaderResourceView*, MeshTextureSlotCount> pixelTextures{};
-        ID3D11SamplerState* pixelSampler = nullptr;
-
-        void Capture(ID3D11DeviceContext* deviceContext)
-        {
-            deviceContext->OMGetRenderTargets(1, &renderTarget, &depthStencilView);
-            deviceContext->OMGetBlendState(&blendState, blendFactor, &sampleMask);
-            deviceContext->OMGetDepthStencilState(&depthStencilState, &stencilReference);
-            deviceContext->RSGetState(&rasterizerState);
-            deviceContext->RSGetViewports(&viewportCount, viewports.data());
-            deviceContext->RSGetScissorRects(&scissorRectCount, scissorRects.data());
-            deviceContext->IAGetInputLayout(&inputLayout);
-            deviceContext->IAGetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
-            deviceContext->IAGetIndexBuffer(&indexBuffer, &indexFormat, &indexOffset);
-            deviceContext->IAGetPrimitiveTopology(&topology);
-            deviceContext->VSGetShader(&vertexShader, nullptr, nullptr);
-            deviceContext->PSGetShader(&pixelShader, nullptr, nullptr);
-            deviceContext->GSGetShader(&geometryShader, nullptr, nullptr);
-            deviceContext->HSGetShader(&hullShader, nullptr, nullptr);
-            deviceContext->DSGetShader(&domainShader, nullptr, nullptr);
-            deviceContext->VSGetConstantBuffers(0, 1, &vertexConstantBuffer);
-            deviceContext->PSGetConstantBuffers(0, 1, &pixelSceneConstantBuffer);
-            deviceContext->PSGetConstantBuffers(1, 1, &pixelMaterialConstantBuffer);
-            deviceContext->PSGetShaderResources(
-                0,
-                static_cast<UINT>(pixelTextures.size()),
-                pixelTextures.data());
-            deviceContext->PSGetSamplers(0, 1, &pixelSampler);
+    void DiscardCommands(ID3D11DeviceContext* deferredContext)
+    {
+        if (!deferredContext) {
+            return;
         }
 
-        void Restore(ID3D11DeviceContext* deviceContext)
-        {
-            deviceContext->OMSetRenderTargets(1, &renderTarget, depthStencilView);
-            deviceContext->OMSetBlendState(blendState, blendFactor, sampleMask);
-            deviceContext->OMSetDepthStencilState(depthStencilState, stencilReference);
-            deviceContext->RSSetState(rasterizerState);
-            deviceContext->RSSetViewports(viewportCount, viewportCount ? viewports.data() : nullptr);
-            deviceContext->RSSetScissorRects(scissorRectCount, scissorRectCount ? scissorRects.data() : nullptr);
-            deviceContext->IASetInputLayout(inputLayout);
-            deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
-            deviceContext->IASetIndexBuffer(indexBuffer, indexFormat, indexOffset);
-            deviceContext->IASetPrimitiveTopology(topology);
-            deviceContext->VSSetShader(vertexShader, nullptr, 0);
-            deviceContext->PSSetShader(pixelShader, nullptr, 0);
-            deviceContext->GSSetShader(geometryShader, nullptr, 0);
-            deviceContext->HSSetShader(hullShader, nullptr, 0);
-            deviceContext->DSSetShader(domainShader, nullptr, 0);
-            deviceContext->VSSetConstantBuffers(0, 1, &vertexConstantBuffer);
-            deviceContext->PSSetConstantBuffers(0, 1, &pixelSceneConstantBuffer);
-            deviceContext->PSSetConstantBuffers(1, 1, &pixelMaterialConstantBuffer);
-            deviceContext->PSSetShaderResources(
-                0,
-                static_cast<UINT>(pixelTextures.size()),
-                pixelTextures.data());
-            deviceContext->PSSetSamplers(0, 1, &pixelSampler);
-
-            ReleaseResource(pixelSampler);
-            for (ID3D11ShaderResourceView*& pixelTexture : pixelTextures) {
-                ReleaseResource(pixelTexture);
-            }
-            ReleaseResource(pixelMaterialConstantBuffer);
-            ReleaseResource(pixelSceneConstantBuffer);
-            ReleaseResource(vertexConstantBuffer);
-            ReleaseResource(domainShader);
-            ReleaseResource(hullShader);
-            ReleaseResource(geometryShader);
-            ReleaseResource(pixelShader);
-            ReleaseResource(vertexShader);
-            ReleaseResource(indexBuffer);
-            ReleaseResource(vertexBuffer);
-            ReleaseResource(inputLayout);
-            ReleaseResource(rasterizerState);
-            ReleaseResource(depthStencilState);
-            ReleaseResource(blendState);
-            ReleaseResource(depthStencilView);
-            ReleaseResource(renderTarget);
+        ID3D11CommandList* commandList = nullptr;
+        if (SUCCEEDED(deferredContext->FinishCommandList(FALSE, &commandList))) {
+            ReleaseResource(commandList);
+        } else {
+            deferredContext->ClearState();
         }
-    };
+    }
 
     struct SceneConstants {
         DirectX::XMFLOAT4X4 worldViewProjection;
@@ -459,7 +363,7 @@ MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNiAVObjectList(
 
 bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* target)
 {
-    if (!sourceMesh || !sourceMesh->mesh || !target || !target->texture || !device || !context) {
+    if (!sourceMesh || !sourceMesh->mesh || !target || !target->texture || !device || !renderContext) {
         return false;
     }
 
@@ -497,7 +401,7 @@ bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* targe
         }
     }
 
-    context->CopyResource(outputMesh->texture, target->texture);
+    renderContext->CopyResource(outputMesh->texture, target->texture);
     return true;
 }
 
@@ -661,18 +565,15 @@ void RenderManager::ReleasePipeline()
 bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
 {
     if (!sourceMesh || !sourceMesh->IsValid() || !target || !target->initialized ||
-        !InitializePipeline() || !sourceMesh->InitializeGpuResources(device)) {
+        !renderContext || !InitializePipeline() || !sourceMesh->InitializeGpuResources(device)) {
         return false;
     }
 
-    PipelineStateSnapshot oldState;
-    oldState.Capture(context);
-
     ID3D11RenderTargetView* renderTargetView = target->renderTargetView;
-    context->OMSetRenderTargets(1, &renderTargetView, target->depthStencilView);
-    context->OMSetBlendState(opaqueBlendState, nullptr, 0xFFFFFFFF);
-    context->OMSetDepthStencilState(depthWriteState, 0);
-    context->RSSetState(rasterizerState);
+    renderContext->OMSetRenderTargets(1, &renderTargetView, target->depthStencilView);
+    renderContext->OMSetBlendState(opaqueBlendState, nullptr, 0xFFFFFFFF);
+    renderContext->OMSetDepthStencilState(depthWriteState, 0);
+    renderContext->RSSetState(rasterizerState);
 
     const D3D11_VIEWPORT viewport{
         0.0f,
@@ -688,24 +589,24 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
         static_cast<LONG>(target->width),
         static_cast<LONG>(target->height)
     };
-    context->RSSetViewports(1, &viewport);
-    context->RSSetScissorRects(1, &scissor);
+    renderContext->RSSetViewports(1, &viewport);
+    renderContext->RSSetScissorRects(1, &scissor);
 
-    context->IASetInputLayout(inputLayout);
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context->VSSetShader(vertexShader, nullptr, 0);
-    context->PSSetShader(pixelShader, nullptr, 0);
-    context->GSSetShader(nullptr, nullptr, 0);
-    context->HSSetShader(nullptr, nullptr, 0);
-    context->DSSetShader(nullptr, nullptr, 0);
-    context->VSSetConstantBuffers(0, 1, &constantBuffer);
-    context->PSSetConstantBuffers(0, 1, &constantBuffer);
-    context->PSSetConstantBuffers(1, 1, &materialConstantBuffer);
-    context->PSSetSamplers(0, 1, &samplerState);
+    renderContext->IASetInputLayout(inputLayout);
+    renderContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    renderContext->VSSetShader(vertexShader, nullptr, 0);
+    renderContext->PSSetShader(pixelShader, nullptr, 0);
+    renderContext->GSSetShader(nullptr, nullptr, 0);
+    renderContext->HSSetShader(nullptr, nullptr, 0);
+    renderContext->DSSetShader(nullptr, nullptr, 0);
+    renderContext->VSSetConstantBuffers(0, 1, &constantBuffer);
+    renderContext->PSSetConstantBuffers(0, 1, &constantBuffer);
+    renderContext->PSSetConstantBuffers(1, 1, &materialConstantBuffer);
+    renderContext->PSSetSamplers(0, 1, &samplerState);
 
     const float clearColor[4]{0.0f, 0.0f, 0.0f, 0.0f};
-    context->ClearRenderTargetView(target->renderTargetView, clearColor);
-    context->ClearDepthStencilView(target->depthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    renderContext->ClearRenderTargetView(target->renderTargetView, clearColor);
+    renderContext->ClearDepthStencilView(target->depthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
     const float aspect = static_cast<float>(target->width) / static_cast<float>(target->height);
     constexpr float cameraY = 320.0f;
@@ -750,67 +651,157 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
     bool rendered = false;
-    if (SUCCEEDED(context->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+    if (SUCCEEDED(renderContext->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
         std::memcpy(mapped.pData, &constants, sizeof(constants));
-        context->Unmap(constantBuffer, 0);
-        sourceMesh->Draw(context, fallbackTextures.data(), materialConstantBuffer, false);
-        context->OMSetBlendState(alphaBlendState, nullptr, 0xFFFFFFFF);
-        context->OMSetDepthStencilState(depthReadState, 0);
-        sourceMesh->Draw(context, fallbackTextures.data(), materialConstantBuffer, true);
-        context->OMSetRenderTargets(0, nullptr, nullptr);
+        renderContext->Unmap(constantBuffer, 0);
+        sourceMesh->Draw(renderContext, fallbackTextures.data(), materialConstantBuffer, false);
+        renderContext->OMSetBlendState(alphaBlendState, nullptr, 0xFFFFFFFF);
+        renderContext->OMSetDepthStencilState(depthReadState, 0);
+        sourceMesh->Draw(renderContext, fallbackTextures.data(), materialConstantBuffer, true);
+        renderContext->OMSetRenderTargets(0, nullptr, nullptr);
         rendered = CopyRenderTargetToMesh(sourceMesh, target);
     }
 
     std::array<ID3D11ShaderResourceView*, MeshTextureSlotCount> noTextures{};
-    context->PSSetShaderResources(0, static_cast<UINT>(noTextures.size()), noTextures.data());
-    oldState.Restore(context);
-    return rendered;
+    renderContext->PSSetShaderResources(0, static_cast<UINT>(noTextures.size()), noTextures.data());
+    if (!rendered) {
+        DiscardCommands(renderContext);
+        return false;
+    }
+    return ExecuteCommands();
 }
 
-void RenderManager::Render()
+bool RenderManager::ExecuteCommands()
 {
-    if (!device || !context) {
+    if (!renderContext || !immediateContext || !completionQuery) {
+        return false;
+    }
+
+    ID3D11CommandList* commandList = nullptr;
+    const HRESULT finishResult = renderContext->FinishCommandList(FALSE, &commandList);
+    if (FAILED(finishResult) || !commandList) {
+        renderContext->ClearState();
+        logger::error("Could not finish mesh render command list: {:08X}", static_cast<std::uint32_t>(finishResult));
+        return false;
+    }
+
+    RE::BSGraphics::Renderer* renderer = RE::BSGraphics::Renderer::GetSingleton();
+    if (!renderer) {
+        commandList->Release();
+        return false;
+    }
+
+    renderer->Lock();
+    // TRUE restores every immediate-context state slot after the private
+    // command list has executed.
+    immediateContext->ExecuteCommandList(commandList, TRUE);
+    commandList->Release();
+
+    immediateContext->End(completionQuery);
+    HRESULT completionResult = S_FALSE;
+    while (completionResult == S_FALSE) {
+        completionResult = immediateContext->GetData(completionQuery, nullptr, 0, 0);
+        if (completionResult == S_FALSE) {
+            SwitchToThread();
+        }
+    }
+    renderer->Unlock();
+    return SUCCEEDED(completionResult);
+}
+
+bool RenderManager::RenderLocked(MeshRenderingFrameworkAPI::Internal::IMesh* outputMesh)
+{
+    if (!outputMesh || !device || !renderContext || !immediateContext) {
+        return false;
+    }
+
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshIterator = meshes.find(outputMesh);
+    if (meshIterator == meshes.end() || !meshIterator->second) {
+        return false;
+    }
+    if (!outputMesh->mustUpdate && !outputMesh->alwaysUpdate) {
+        return outputMesh->SRV != nullptr;
+    }
+
+    const std::string targetKey = RenderTarget::GetKey(outputMesh->width, outputMesh->height);
+    std::map<std::string, RenderTarget*>::iterator targetIterator = renderTarget.find(targetKey);
+    if (targetIterator == renderTarget.end() || !targetIterator->second) {
+        return false;
+    }
+
+    RenderTarget* target = targetIterator->second;
+    if (!target->initialized) {
+        InitRenderTarget(target);
+    }
+    if (!target->initialized || !RenderMesh(meshIterator->second, target)) {
+        return false;
+    }
+
+    outputMesh->mustUpdate = false;
+    return true;
+}
+
+bool RenderManager::Render(MeshRenderingFrameworkAPI::Internal::IMesh* outputMesh)
+{
+    std::unique_lock lock(mutex);
+    return RenderLocked(outputMesh);
+}
+
+void RenderManager::RenderPending()
+{
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshIterator = meshes.begin();
+    while (meshIterator != meshes.end()) {
+        MeshRenderingFrameworkAPI::Internal::IMesh* outputMesh = meshIterator->first;
+        ++meshIterator;
+        if (!outputMesh) {
+            continue;
+        }
+
+        if (outputMesh->mustUpdate || outputMesh->alwaysUpdate) {
+            RenderLocked(outputMesh);
+        }
+
+        if (outputMesh->saveNextFrame && outputMesh->savePath && SaveLocked(outputMesh, outputMesh->savePath)) {
+            outputMesh->savePath = nullptr;
+            outputMesh->saveNextFrame = false;
+        }
+        if (outputMesh->deleteAfterSave && !outputMesh->saveNextFrame) {
+            DeleteLocked(outputMesh);
+        }
+    }
+}
+
+void RenderManager::DeleteLocked(MeshRenderingFrameworkAPI::Internal::IMesh* outputMesh)
+{
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshIterator = meshes.find(outputMesh);
+    if (meshIterator == meshes.end()) {
         return;
     }
 
-    std::vector<Mesh*> deleteMeshes;
-    {
-        std::shared_lock lock(mutex);
-        for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& entry : meshes) {
-            Mesh* sourceMesh = entry.second;
-            if (!sourceMesh || (!sourceMesh->mesh->mustUpdate && !sourceMesh->mesh->alwaysUpdate)) {
-                continue;
-            }
-
-            const std::string targetKey = RenderTarget::GetKey(sourceMesh->mesh->width, sourceMesh->mesh->height);
-            std::map<std::string, RenderTarget*>::iterator targetIterator = renderTarget.find(targetKey);
-            if (targetIterator == renderTarget.end()) {
-                continue;
-            }
-            RenderTarget* target = targetIterator->second;
-            if (!target->initialized) {
-                InitRenderTarget(target);
-            }
-
-            if (!RenderMesh(sourceMesh, target)) {
-                continue;
-            }
-
-            sourceMesh->mesh->mustUpdate = false;
-            if (sourceMesh->mesh->saveNextFrame && sourceMesh->mesh->savePath) {
-                Save(sourceMesh->mesh, sourceMesh->mesh->savePath);
-                sourceMesh->mesh->savePath = nullptr;
-                sourceMesh->mesh->saveNextFrame = false;
-            }
-            if (sourceMesh->mesh->deleteAfterSave) {
-                deleteMeshes.push_back(sourceMesh);
-            }
+    std::map<std::string, RenderTarget*>::iterator targetIterator;
+    targetIterator = renderTarget.find(RenderTarget::GetKey(outputMesh->width, outputMesh->height));
+    if (targetIterator != renderTarget.end()) {
+        targetIterator->second->numReferences--;
+        if (targetIterator->second->numReferences == 0) {
+            delete targetIterator->second;
+            renderTarget.erase(targetIterator);
         }
     }
 
-    for (Mesh* sourceMesh : deleteMeshes) {
-        IMesh_Delete(sourceMesh->mesh);
+    Mesh* sourceMesh = meshIterator->second;
+    meshes.erase(meshIterator);
+    delete sourceMesh;
+}
+
+void RenderManager::Delete(MeshRenderingFrameworkAPI::Internal::IMesh* outputMesh)
+{
+    if (!outputMesh) {
+        return;
     }
+
+    std::unique_lock lock(mutex);
+    DeleteLocked(outputMesh);
 }
 
 void RenderManager::InitRenderTarget(RenderTarget* target)
@@ -860,11 +851,32 @@ void RenderManager::InitRenderTarget(RenderTarget* target)
     target->initialized = true;
 }
 
-void RenderManager::Init(ID3D11Device* newDevice, ID3D11DeviceContext* newContext)
+bool RenderManager::Init(ID3D11Device* newDevice, ID3D11DeviceContext* newContext)
 {
+    std::unique_lock lock(mutex);
+
     ReleasePipeline();
+    ReleaseResource(completionQuery);
+    ReleaseResource(renderContext);
     device = newDevice;
-    context = newContext;
+    immediateContext = newContext;
+
+    if (!device || !immediateContext) {
+        return false;
+    }
+
+    HRESULT result = device->CreateDeferredContext(0, &renderContext);
+    D3D11_QUERY_DESC queryDescription{};
+    queryDescription.Query = D3D11_QUERY_EVENT;
+    if (SUCCEEDED(result)) {
+        result = device->CreateQuery(&queryDescription, &completionQuery);
+    }
+    if (FAILED(result) || !InitializePipeline()) {
+        ReleasePipeline();
+        ReleaseResource(completionQuery);
+        ReleaseResource(renderContext);
+        return false;
+    }
 
     for (const std::pair<const std::string, RenderTarget*>& entry : renderTarget) {
         RenderTarget* target = entry.second;
@@ -877,36 +889,58 @@ void RenderManager::Init(ID3D11Device* newDevice, ID3D11DeviceContext* newContex
     for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& entry : meshes) {
         entry.second->ResetGpuResources();
     }
+    return true;
 }
 
-void RenderManager::Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename)
+bool RenderManager::SaveLocked(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename)
 {
-    if (!mesh || !mesh->SRV || !filename || !device || !context) {
-        return;
+    if (!mesh || !filename || !filename[0]) {
+        return false;
+    }
+
+    if (!RenderLocked(mesh) || !mesh->SRV || !device || !immediateContext) {
+        return false;
     }
 
     std::filesystem::path path(filename);
     ID3D11Resource* resource = nullptr;
     mesh->SRV->GetResource(&resource);
     if (!resource) {
-        return;
+        return false;
     }
 
     DirectX::ScratchImage image;
-    if (FAILED(DirectX::CaptureTexture(device, context, resource, image))) {
+    RE::BSGraphics::Renderer* renderer = RE::BSGraphics::Renderer::GetSingleton();
+    if (!renderer) {
         resource->Release();
-        return;
+        return false;
+    }
+
+    renderer->Lock();
+    const HRESULT captureResult = DirectX::CaptureTexture(device, immediateContext, resource, image);
+    renderer->Unlock();
+    if (FAILED(captureResult)) {
+        resource->Release();
+        return false;
     }
 
     const std::wstring wideName = path.wstring();
+    HRESULT saveResult = E_FAIL;
     if (_wcsicmp(path.extension().c_str(), L".dds") == 0) {
-        DirectX::SaveToDDSFile(
+        saveResult = DirectX::SaveToDDSFile(
             image.GetImages(), image.GetImageCount(), image.GetMetadata(), DirectX::DDS_FLAGS_NONE, wideName.c_str());
     } else {
-        DirectX::SaveToWICFile(
+        saveResult = DirectX::SaveToWICFile(
             *image.GetImage(0, 0, 0), DirectX::WIC_FLAGS_FORCE_SRGB, GUID_ContainerFormatPng, wideName.c_str());
     }
     resource->Release();
+    return SUCCEEDED(saveResult);
+}
+
+bool RenderManager::Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filename)
+{
+    std::unique_lock lock(mutex);
+    return SaveLocked(mesh, filename);
 }
 
 std::string RenderTarget::GetKey(uint32_t width, uint32_t height)

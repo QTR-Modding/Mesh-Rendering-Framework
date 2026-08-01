@@ -33,6 +33,8 @@ https://github.com/QTR-Modding/SKSE-Menu-Framework-3/blob/master/README.md
 
 NIF resources are parsed with [ousnius/nifly](https://github.com/ousnius/nifly) and rendered by this plugin's own Direct3D 11 pipeline. The renderer no longer clones objects into Skyrim's `UI3DSceneManager` or asks the Creation Engine to draw menu meshes.
 
+The mesh pipeline uses its own deferred context and off-screen color/depth resources on Skyrim's D3D11 device. It does not hook Skyrim's render loop or bind mesh state directly to Skyrim's immediate context. Initial creation waits for GPU completion, and save calls return after the output file has been written. A 10 ms task loop renders meshes whose existing `mustUpdate` or `alwaysUpdate` fields request an update.
+
 The path-based and form-based APIs load loose or archived game resources. NIF paths may be passed either as full resource paths (`meshes\weapons\iron\Longsword.nif`) or as model paths returned by game forms (`weapons\iron\Longsword.nif`); the renderer normalizes the latter under `meshes\`. The legacy `NiAVObject` list overloads remain in the public header for ABI compatibility, but return `nullptr`: nifly consumes serialized NIF streams and cannot reconstruct one from arbitrary live scene objects.
 
-Existing plugins do not need to replace their copied `MeshRenderingFrameworkAPI` header. Resource-path normalization is performed inside the framework DLL, and the original exported create, save, and delete contracts remain available.
+The public API and its original create, save, and delete exports remain unchanged, so existing copied API headers continue to work.

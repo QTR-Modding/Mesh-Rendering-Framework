@@ -25,6 +25,10 @@ MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNifPath(const char* ni
     MeshRenderingFrameworkAPI::Internal::IMesh* mesh = RenderManager::AddByNifPAth(nifPath, width, height);
     if (mesh) {
         AddRenderTargetReference(width, height);
+        if (!RenderManager::Render(mesh)) {
+            ::IMesh_Delete(mesh);
+            return nullptr;
+        }
     }
     return mesh;
 }
@@ -51,32 +55,8 @@ MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNiAVObjectList(RE::NiA
     return RenderManager::AddByNiAVObjectList(objects, objectCount, width, height);
 }
 
-
 void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh) { 
-    if (!mesh) {
-        return;
-    }
-
-     std::unique_lock lock(RenderManager::mutex);
-
-    std::map<std::string, RenderTarget*>::iterator renderTargetIt;
-    renderTargetIt = RenderManager::renderTarget.find(RenderTarget::GetKey(mesh->width, mesh->height));
-    if (renderTargetIt != RenderManager::renderTarget.end()) {
-        renderTargetIt->second->numReferences--;
-        if (renderTargetIt->second->numReferences <= 0) {
-            delete renderTargetIt->second;
-            RenderManager::renderTarget.erase(renderTargetIt);
-        }
-    }
-
-	std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator it;
-    it = RenderManager::meshes.find(mesh);
-    if (it != RenderManager::meshes.end()) {
-        auto item = it->second;
-        RenderManager::meshes.erase(it);
-        delete item;
-    }
-
+    RenderManager::Delete(mesh);
 }
 
 FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_Save(
@@ -87,6 +67,5 @@ FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_Save(
         return nullptr;
     }
 
-    RenderManager::Save(mesh, filePath);
-    return mesh;
+    return RenderManager::Save(mesh, filePath) ? mesh : nullptr;
 }

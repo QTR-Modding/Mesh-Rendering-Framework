@@ -105,8 +105,6 @@ endforeach()
 list(REMOVE_DUPLICATES header_dirs)
 
 find_package(directxtex CONFIG REQUIRED)
-find_path(DETOURS_INCLUDE_DIRS "detours/detours.h")
-find_library(DETOURS_LIBRARY detours REQUIRED)
 
 target_include_directories(
 	${PROJECT_NAME}
@@ -115,7 +113,7 @@ target_include_directories(
     ${CLIB_UTIL_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(${PROJECT_NAME} PRIVATE ${DETOURS_LIBRARY} Microsoft::DirectXTex nifly d3dcompiler)
+target_link_libraries(${PROJECT_NAME} PRIVATE Microsoft::DirectXTex nifly d3dcompiler)
 target_compile_definitions(${PRODUCT_NAME} PRIVATE MOD_NAME="${BEAUTIFUL_NAME}")
 
 

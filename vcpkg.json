@@ -9,8 +9,7 @@
     "spdlog",
     "glm",
     "xbyak",
-    "directxtex",
-    "detours"
+    "directxtex"
   ],
   "overrides": [
     {
