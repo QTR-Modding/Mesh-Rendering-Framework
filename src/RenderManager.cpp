@@ -256,8 +256,10 @@ namespace
             // would wash out the material colors. Scaling by luminance preserves hue.
             float3 positiveColor = max(color, 0.0f);
             float luminance = max(dot(positiveColor, float3(0.2126f, 0.7152f, 0.0722f)), 0.00001f);
-            float displayLuminance = pow(saturate(luminance), 1.0f / 1.6f);
+            float displayLuminance = pow(saturate(luminance), 1.0f / 1.8f);
             float3 displayColor = saturate(positiveColor * (displayLuminance / luminance));
+            // Temper saturation without changing the corrected luminance.
+            displayColor = lerp(displayLuminance.xxx, displayColor, 0.5f);
             return float4(displayColor, outputAlpha);
         }
     )";
