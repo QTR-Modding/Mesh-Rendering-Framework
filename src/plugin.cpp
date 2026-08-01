@@ -1,4 +1,5 @@
 #include "Plugin.h"
+#include "Hooks.h"
 #include "MeshRenderingFrameworkAPI.h"
 #include "RenderManager.h"
 
@@ -54,20 +55,6 @@ namespace
 void OnMessage(SKSE::MessagingInterface::Message* message) {
 
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
-        RE::BSGraphics::Renderer* renderer = RE::BSGraphics::Renderer::GetSingleton();
-        if (!renderer) {
-            logger::error("Could not initialize mesh renderer: Skyrim renderer is unavailable");
-            return;
-        }
-
-        RE::BSGraphics::RendererData& runtimeData = renderer->GetRuntimeData();
-        ID3D11Device* device = reinterpret_cast<ID3D11Device*>(runtimeData.forwarder);
-        ID3D11DeviceContext* context = reinterpret_cast<ID3D11DeviceContext*>(runtimeData.context);
-        if (!RenderManager::Init(device, context)) {
-            logger::error("Could not initialize synchronous mesh renderer");
-            return;
-        }
-
         RenderUpdateLoop::Start();
         UI::Register();
     }
@@ -77,6 +64,7 @@ SKSEPluginLoad(const SKSE::LoadInterface *skse) {
     SKSE::Init(skse);
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     SetupLog();
+    Hooks::Install();
     logger::info("Plugin loaded");
     return true;
 }

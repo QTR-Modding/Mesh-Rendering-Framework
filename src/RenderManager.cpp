@@ -256,7 +256,7 @@ namespace
             // would wash out the material colors. Scaling by luminance preserves hue.
             float3 positiveColor = max(color, 0.0f);
             float luminance = max(dot(positiveColor, float3(0.2126f, 0.7152f, 0.0722f)), 0.00001f);
-            float displayLuminance = pow(saturate(luminance), 1.0f / 1.5f);
+            float displayLuminance = pow(saturate(luminance), 1.0f / 1.6f);
             float3 displayColor = saturate(positiveColor * (displayLuminance / luminance));
             return float4(displayColor, outputAlpha);
         }
@@ -854,6 +854,10 @@ void RenderManager::InitRenderTarget(RenderTarget* target)
 bool RenderManager::Init(ID3D11Device* newDevice, ID3D11DeviceContext* newContext)
 {
     std::unique_lock lock(mutex);
+
+    if (device == newDevice && immediateContext == newContext && renderContext && completionQuery) {
+        return InitializePipeline();
+    }
 
     ReleasePipeline();
     ReleaseResource(completionQuery);
