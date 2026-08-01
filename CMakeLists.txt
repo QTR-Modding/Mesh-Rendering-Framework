@@ -52,7 +52,7 @@ add_custom_target(Resource ALL DEPENDS ${RESOURCE_OUTPUT})
 #                Plugin Configuration                  #
 # ---------------------------------------------------- #
 
-include(FetchContent)
+add_subdirectory(vendor/nifly)
 
 set(ENABLE_SKYRIM_SE ON CACHE BOOL " " FORCE)
 set(ENABLE_SKYRIM_AE ON CACHE BOOL " " FORCE)
@@ -115,7 +115,7 @@ target_include_directories(
     ${CLIB_UTIL_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(${PROJECT_NAME} PRIVATE ${DETOURS_LIBRARY} Microsoft::DirectXTex)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${DETOURS_LIBRARY} Microsoft::DirectXTex nifly d3dcompiler)
 target_compile_definitions(${PRODUCT_NAME} PRIVATE MOD_NAME="${BEAUTIFUL_NAME}")
 
 

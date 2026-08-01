@@ -1,0 +1,3 @@
+[submodule "vendor/nifly"]
+	path = vendor/nifly
+	url = https://github.com/Thiago099/nifly

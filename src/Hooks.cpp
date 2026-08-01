@@ -16,22 +16,6 @@ namespace Hooks {
         }
     };
 
-    struct UI__IsPauseMenuDisabled {
-        static bool thunk(int64_t* gMenuManager) {
-            auto result = originalFunction(gMenuManager);
-
-            if (RenderManager::GetIsRendering()) {
-                return true;
-            }
-
-            return result;
-        }
-        static inline REL::Relocation<decltype(thunk)> originalFunction;
-        static inline void Install() {
-            auto& trampoline = SKSE::GetTrampoline();
-            originalFunction = trampoline.write_call<5>(REL::RelocationID(51855, 52727).address() + REL::Relocate(0x75, 0x70), thunk);
-        }
-    };
 }
 struct CreateD3DAndSwapChain {
     static void thunk() {
@@ -69,8 +53,7 @@ struct CreateD3DAndSwapChain {
 };
 
 void Hooks::Install() {
-    SKSE::AllocTrampoline(14*3);
-    UI__IsPauseMenuDisabled::Install();
+    SKSE::AllocTrampoline(14*2);
     CreateD3DAndSwapChain::Install();
     RenderEndHook::Install();
 }

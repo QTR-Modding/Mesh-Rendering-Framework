@@ -28,3 +28,11 @@ https://github.com/Thiago099/CommonLibVR
 ## Description of the new features
 
 https://github.com/QTR-Modding/SKSE-Menu-Framework-3/blob/master/README.md
+
+## Mesh backend
+
+NIF resources are parsed with [ousnius/nifly](https://github.com/ousnius/nifly) and rendered by this plugin's own Direct3D 11 pipeline. The renderer no longer clones objects into Skyrim's `UI3DSceneManager` or asks the Creation Engine to draw menu meshes.
+
+The path-based and form-based APIs load loose or archived game resources. NIF paths may be passed either as full resource paths (`meshes\weapons\iron\Longsword.nif`) or as model paths returned by game forms (`weapons\iron\Longsword.nif`); the renderer normalizes the latter under `meshes\`. The legacy `NiAVObject` list overloads remain in the public header for ABI compatibility, but return `nullptr`: nifly consumes serialized NIF streams and cannot reconstruct one from arbitrary live scene objects.
+
+Existing plugins do not need to replace their copied `MeshRenderingFrameworkAPI` header. Resource-path normalization is performed inside the framework DLL, and the original exported create, save, and delete contracts remain available.

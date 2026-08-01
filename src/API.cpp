@@ -22,9 +22,11 @@ namespace
 }
 
 MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNifPath(const char* nifPath, uint32_t width, uint32_t height) {
-    AddRenderTargetReference(width, height);
-
-	return RenderManager::AddByNifPAth(nifPath, width, height); 
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh = RenderManager::AddByNifPAth(nifPath, width, height);
+    if (mesh) {
+        AddRenderTargetReference(width, height);
+    }
+    return mesh;
 }
 
 MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
@@ -44,8 +46,8 @@ MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNiAVObjectList(RE::NiA
         return nullptr;
     }
 
-    AddRenderTargetReference(width, height);
-
+    // nifly operates on serialized NIF streams and cannot reconstruct a source
+    // file from arbitrary live Creation Engine scene objects.
     return RenderManager::AddByNiAVObjectList(objects, objectCount, width, height);
 }
 
@@ -77,5 +79,14 @@ void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh) {
 
 }
 
-FUNCTION_PREFIX void IMesh_Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filePath) { 
-    RenderManager::Save(mesh, filePath); }
+FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_Save(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* filePath)
+{
+    if (!mesh || !filePath) {
+        return nullptr;
+    }
+
+    RenderManager::Save(mesh, filePath);
+    return mesh;
+}

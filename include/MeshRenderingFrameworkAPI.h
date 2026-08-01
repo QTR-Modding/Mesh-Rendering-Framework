@@ -146,6 +146,8 @@ namespace MeshRenderingFrameworkAPI {
         }
 
         inline IMesh* CreateFromNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
+            // Retained for ABI compatibility. The nifly renderer requires a NIF
+            // resource path, so live scene-object lists are not renderable.
             if (!objects || objectCount == 0) {
                 return nullptr;
             }
@@ -237,7 +239,7 @@ namespace MeshRenderingFrameworkAPI {
             if (!mesh) {
                 return;
             }
-            mesh->alwaysUpdate = true;
+            mesh->alwaysUpdate = value;
         }
         ~Mesh() {
             if (mesh) {
@@ -258,6 +260,7 @@ namespace MeshRenderingFrameworkAPI {
             }
             mesh = Internal::CreateFromBaseObject(base, width, height);
         }
+        // The meshes\ prefix is optional.
         Mesh(const char* path, uint32_t width, uint32_t height) {
             base = nullptr;
             mesh = Internal::IMesh_CreateByNifPath(path, width, height);
@@ -276,6 +279,8 @@ namespace MeshRenderingFrameworkAPI {
     class OrbitMesh : public Mesh {
         RE::NiMatrix3 orientation;
         bool orientationChanged = true;
+        uint32_t renderWidth;
+        uint32_t renderHeight;
 
     public:
         void SetOrbitOrientation(RE::NiMatrix3 orientation) {
@@ -287,26 +292,45 @@ namespace MeshRenderingFrameworkAPI {
             orientationChanged = true;
         }
 
-        OrbitMesh(RE::TESBoundObject* base, uint32_t width, uint32_t height) : Mesh(base, width, height) { ScaleUp(0.8f); }
+        OrbitMesh(RE::TESBoundObject* base, uint32_t width, uint32_t height)
+            : Mesh(base, width, height), renderWidth(width), renderHeight(height) { ScaleUp(0.8f); }
 
-        OrbitMesh(RE::FormID id, uint32_t width, uint32_t height) : Mesh(id, width, height) { ScaleUp(0.8f); }
+        OrbitMesh(RE::FormID id, uint32_t width, uint32_t height)
+            : Mesh(id, width, height), renderWidth(width), renderHeight(height) { ScaleUp(0.8f); }
 
-        OrbitMesh(const char* path, uint32_t width, uint32_t height) : Mesh(path, width, height) { ScaleUp(0.8f); }
+        OrbitMesh(const char* path, uint32_t width, uint32_t height)
+            : Mesh(path, width, height), renderWidth(width), renderHeight(height) { ScaleUp(0.8f); }
 
-        OrbitMesh(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) : Mesh(objects, objectCount, width, height) { ScaleUp(0.8f); }
+        OrbitMesh(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height)
+            : Mesh(objects, objectCount, width, height), renderWidth(width), renderHeight(height) { ScaleUp(0.8f); }
 
-        OrbitMesh(const std::vector<RE::NiAVObject*>& objects, uint32_t width, uint32_t height) : Mesh(objects, width, height) { ScaleUp(0.8f); }
+        OrbitMesh(const std::vector<RE::NiAVObject*>& objects, uint32_t width, uint32_t height)
+            : Mesh(objects, width, height), renderWidth(width), renderHeight(height) { ScaleUp(0.8f); }
 
         void Render(const char* name) {
-            if (GetResourceView()) {
-                const ImGuiMCP::ImVec2 imageSize{mesh->width, mesh->height};
+            constexpr float maxDisplayWidth = 384.0f;
+            const float availableWidth = std::max(ImGuiMCP::GetContentRegionAvail().x, 1.0f);
+            const float imageWidth = std::min({availableWidth, static_cast<float>(renderWidth), maxDisplayWidth});
+            const float aspect = renderWidth > 0
+                ? static_cast<float>(renderHeight) / static_cast<float>(renderWidth)
+                : 1.0f;
+            const ImGuiMCP::ImVec2 imageSize{imageWidth, imageWidth * aspect};
 
-                ImGuiMCP::InvisibleButton(name, imageSize);
+            ImGuiMCP::InvisibleButton(name, imageSize);
+            const auto imageMin = ImGuiMCP::GetItemRectMin();
+            const auto imageMax = ImGuiMCP::GetItemRectMax();
+            ImGuiMCP::ImDrawList* drawList = ImGuiMCP::GetWindowDrawList();
+            ID3D11ShaderResourceView* resourceView = GetResourceView();
 
-                const auto imageMin = ImGuiMCP::GetItemRectMin();
-                const auto imageMax = ImGuiMCP::GetItemRectMax();
-
-                ImGuiMCP::ImDrawListManager::AddImage(ImGuiMCP::GetWindowDrawList(), (ImGuiMCP::ImTextureID)GetResourceView(), imageMin, imageMax, {0, 0}, {1, 1}, IM_COL32_WHITE);
+            if (resourceView) {
+                ImGuiMCP::ImDrawListManager::AddImage(
+                    drawList,
+                    (ImGuiMCP::ImTextureID)resourceView,
+                    imageMin,
+                    imageMax,
+                    {0, 0},
+                    {1, 1},
+                    IM_COL32_WHITE);
 
                 if (ImGuiMCP::IsItemActive() && ImGuiMCP::IsMouseDown(ImGuiMCP::ImGuiMouseButton_Left)) {
                     const auto delta = ImGuiMCP::GetIO()->MouseDelta;
@@ -332,6 +356,16 @@ namespace MeshRenderingFrameworkAPI {
                     SetRotation(orientation);
                     orientationChanged = false;
                 }
+            } else {
+                ImGuiMCP::ImDrawListManager::AddRectFilled(
+                    drawList, imageMin, imageMax, IM_COL32(32, 32, 32, 255), 0.0f, 0);
+                ImGuiMCP::ImDrawListManager::AddRect(
+                    drawList, imageMin, imageMax, IM_COL32(96, 96, 96, 255), 0.0f, 0, 1.0f);
+                ImGuiMCP::ImDrawListManager::AddText(
+                    drawList,
+                    {imageMin.x + 8.0f, imageMin.y + 8.0f},
+                    IM_COL32(192, 192, 192, 255),
+                    "Mesh unavailable");
             }
         }
     };

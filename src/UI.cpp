@@ -16,8 +16,8 @@ void __stdcall UI::ResourceInspector::Render() {
     }
     ImGuiMCP::Text("Cached Meshes");
     for (auto& [key, value] : RenderManager::meshes) {
-        if (value->nif) {
-            ImGuiMCP::Text(std::format("{}", value->nif->nifPath).c_str());
+        if (value && !value->sourcePath.empty()) {
+            ImGuiMCP::Text(value->sourcePath.c_str());
         }
     }
 }
