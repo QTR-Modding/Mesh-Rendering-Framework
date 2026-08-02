@@ -1195,11 +1195,15 @@ bool Mesh::Load(const char* nifPath)
                 part.faceGenPart = part.faceGenPart ||
                                    lightingShader->IsFaceTinted() ||
                                    (lightingShader->shaderFlags1 & nifly::SLSF1_FACEGEN_RGB_TINT) != 0;
-                if (faceOrSkinTinted && part.shapeName != "body") {
-                    // Creation Engine specular strength is not a direct match for
-                    // this renderer. Keep face and hand highlights subdued, but
-                    // preserve the Body shape's authored external-specular value.
-                    part.specularStrength = std::min(part.specularStrength, 0.2f);
+                if (faceOrSkinTinted) {
+                    // The external skin lighting map carries subtle variation;
+                    // it still needs a dielectric base strength to remain visible.
+                    part.specularStrength = std::max(part.specularStrength, 0.5f);
+                    if (part.specularColor[0] + part.specularColor[1] + part.specularColor[2] < 0.0001f) {
+                        part.specularColor[0] = 1.0f;
+                        part.specularColor[1] = 1.0f;
+                        part.specularColor[2] = 1.0f;
+                    }
                 }
                 const bool hasParallax = shaderType == nifly::BSLSP_PARALLAX ||
                                          shaderType == nifly::BSLSP_PARALLAXOCC ||
@@ -2071,6 +2075,12 @@ bool Mesh::SetTextureSet(
             !part.texturePaths[TextureSlotIndex(MeshTextureSlot::Specular)].empty();
         if (hasSeparateSpecularMap) {
             part.specularEnabled = true;
+            part.specularStrength = std::max(part.specularStrength, 0.5f);
+            if (part.specularColor[0] + part.specularColor[1] + part.specularColor[2] < 0.0001f) {
+                part.specularColor[0] = 1.0f;
+                part.specularColor[1] = 1.0f;
+                part.specularColor[2] = 1.0f;
+            }
         }
         const std::size_t unusedLightingMapIndex = TextureSlotIndex(
             usesModelSpaceNormals ? MeshTextureSlot::Backlight : MeshTextureSlot::Specular);

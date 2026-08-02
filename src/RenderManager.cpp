@@ -169,7 +169,16 @@ namespace
             float3 lightDirection = normalize(lightDirections[lightIndex].xyz);
             float diffuseAmount = saturate(dot(normal, lightDirection));
             float3 halfVector = normalize(lightDirection + viewDirection);
-            float specularAmount = pow(saturate(dot(normal, halfVector)), max(glossiness, 1.0f));
+            float normalHalf = saturate(dot(normal, halfVector));
+            float specularPower = max(glossiness, 1.0f);
+            float specularAmount = pow(normalHalf, specularPower);
+            if (faceOrSkin > 0.5f) {
+                // Skyrim's skin glossiness does not map directly to a
+                // Blinn-Phong exponent. Blend in a broader lobe so the low-valued
+                // external skin lighting map still produces a visible highlight.
+                float broadSpecular = pow(normalHalf, max(specularPower * 0.25f, 4.0f));
+                specularAmount = lerp(specularAmount, broadSpecular, 0.6f);
+            }
             float3 diffuseLight = albedo * diffuseAmount;
             float3 specularLight = specularColor * specularStrength * specularMask * specularAmount;
             return (diffuseLight + specularLight) * lightColors[lightIndex].rgb;
@@ -202,6 +211,8 @@ namespace
             float3 normal = geometricNormal;
             if (hasNormalMap > 0.5f) {
                 if (modelSpaceNormals > 0.5f) {
+                    // Skyrim model-space normal textures store the mesh Y and Z
+                    // components in the blue and green channels respectively.
                     float3 mappedNormal = normalize(normalSample.xzy * 2.0f - 1.0f);
                     normal = normalize(mul(mappedNormal, (float3x3)world)) * faceSign;
                 } else {
@@ -276,10 +287,13 @@ namespace
 
             float outputAlpha = blendEnabled > 0.5f ? alpha : 1.0f;
             // Lift UI midtones without applying a per-channel tone curve, which
-            // would wash out the material colors. Scaling by luminance preserves hue.
+            // would wash out the material colors. A luminance-space Reinhard
+            // curve preserves both hue and shading above 1.0 instead of clipping
+            // bright skin/tint materials to a single flat value.
             float3 positiveColor = max(color, 0.0f);
             float luminance = max(dot(positiveColor, float3(0.2126f, 0.7152f, 0.0722f)), 0.00001f);
-            float displayLuminance = pow(saturate(luminance), 1.0f / 1.8f);
+            float mappedLuminance = luminance / (1.0f + luminance);
+            float displayLuminance = pow(mappedLuminance, 1.0f / 2.2f);
             float3 displayColor = saturate(positiveColor * (displayLuminance / luminance));
             float displaySaturation = faceOrSkin > 0.5f ? 0.5f : 0.5f;
             displayColor = lerp(displayLuminance.xxx, displayColor, displaySaturation);
