@@ -34,5 +34,12 @@ FUNCTION_PREFIX bool IMesh_SetMorph(
     float value);
 FUNCTION_PREFIX bool IMesh_ClearFaceMorphs(
     MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+FUNCTION_PREFIX bool IMesh_SetTextureSet(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* nifPath,
+    const char* const* texturePaths,
+    std::uint32_t texturePathCount,
+    bool modelSpaceNormals,
+    bool includeBodyShape);
 FUNCTION_PREFIX void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
 FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filePath);

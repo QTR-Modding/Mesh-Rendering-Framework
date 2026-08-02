@@ -202,7 +202,7 @@ namespace
             float3 normal = geometricNormal;
             if (hasNormalMap > 0.5f) {
                 if (modelSpaceNormals > 0.5f) {
-                    float3 mappedNormal = normalize(normalSample.xyz * 2.0f - 1.0f);
+                    float3 mappedNormal = normalize(normalSample.xzy * 2.0f - 1.0f);
                     normal = normalize(mul(mappedNormal, (float3x3)world)) * faceSign;
                 } else {
                     float2 mappedXY = normalSample.xy * 2.0f - 1.0f;
@@ -224,13 +224,18 @@ namespace
                 float3 faceTint = faceTintTexture.Sample(materialSampler, uv).rgb;
                 albedo *= saturate(faceTint * 2.0f) * 5.0f;
             }
-            if (skinTinted > 0.5f && useBodyTint > 0.5f) {
+            if (useBodyTint > 0.5f) {
                 albedo *= bodyTintColor * 5.0f;
             }
 
             float specularMask = hasSpecularMap > 0.5f
                 ? specularTexture.Sample(materialSampler, uv).r
                 : (hasNormalMap > 0.5f ? normalSample.a : 1.0f);
+            if (faceOrSkin > 0.5f && hasSpecularMap > 0.5f) {
+                // Skin lighting maps contain low-valued variation over a
+                // dielectric base reflectance, rather than the complete F0.
+                specularMask = lerp(0.04f, 1.0f, saturate(specularMask));
+            }
             specularMask *= specularEnabled;
 
             float3 color = albedo * ambientColor.rgb;
@@ -498,6 +503,31 @@ bool RenderManager::ClearFaceMorphs(
         return false;
     }
     return meshEntry->second->ClearFaceMorphs();
+}
+
+bool RenderManager::SetTextureSet(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* nifPath,
+    const char* const* texturePaths,
+    std::uint32_t texturePathCount,
+    bool modelSpaceNormals,
+    bool includeBodyShape)
+{
+    if (!mesh || !nifPath || !nifPath[0] || !texturePaths || texturePathCount == 0) {
+        return false;
+    }
+
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshEntry = meshes.find(mesh);
+    if (meshEntry == meshes.end() || !meshEntry->second) {
+        return false;
+    }
+    return meshEntry->second->SetTextureSet(
+        nifPath,
+        texturePaths,
+        texturePathCount,
+        modelSpaceNormals,
+        includeBodyShape);
 }
 
 bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* target)

@@ -126,6 +126,23 @@ bool IMesh_ClearFaceMorphs(
     return RenderManager::ClearFaceMorphs(mesh);
 }
 
+bool IMesh_SetTextureSet(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* nifPath,
+    const char* const* texturePaths,
+    std::uint32_t texturePathCount,
+    bool modelSpaceNormals,
+    bool includeBodyShape)
+{
+    return RenderManager::SetTextureSet(
+        mesh,
+        nifPath,
+        texturePaths,
+        texturePathCount,
+        modelSpaceNormals,
+        includeBodyShape);
+}
+
 void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh) { 
     RenderManager::Delete(mesh);
 }

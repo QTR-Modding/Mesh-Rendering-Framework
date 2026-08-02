@@ -94,6 +94,7 @@ static_assert(sizeof(MeshMaterialConstants) % 16 == 0);
 
 struct MeshPart {
     std::string shapeName;
+    std::string sourcePath;
     std::vector<MeshVertex> vertices;
     std::vector<std::uint16_t> indices;
     std::array<std::string, MeshTextureSlotCount> texturePaths;
@@ -190,6 +191,12 @@ public:
     bool SetMorph(const char* triPath, const char* morphName, float value);
     bool ClearFaceMorphs();
     bool SetFaceMorphSource(RE::Actor* actor);
+    bool SetTextureSet(
+        const char* nifPath,
+        const char* const* texturePaths,
+        std::uint32_t texturePathCount,
+        bool modelSpaceNormals,
+        bool includeBodyShape);
     bool UpdateAnimation();
     void Draw(
         ID3D11DeviceContext* context,

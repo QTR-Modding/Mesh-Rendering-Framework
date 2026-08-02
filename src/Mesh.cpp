@@ -781,6 +781,7 @@ namespace
 
 MeshPart::MeshPart(MeshPart&& other) noexcept
     : shapeName(std::move(other.shapeName)),
+      sourcePath(std::move(other.sourcePath)),
       vertices(std::move(other.vertices)),
       indices(std::move(other.indices)),
       texturePaths(std::move(other.texturePaths)),
@@ -836,6 +837,7 @@ MeshPart& MeshPart::operator=(MeshPart&& other) noexcept
     if (this != &other) {
         ResetGpuResources();
         shapeName = std::move(other.shapeName);
+        sourcePath = std::move(other.sourcePath);
         vertices = std::move(other.vertices);
         indices = std::move(other.indices);
         texturePaths = std::move(other.texturePaths);
@@ -1039,6 +1041,7 @@ bool Mesh::Load(const char* nifPath)
 
         MeshPart part;
         part.shapeName = Lowercase(shape->name.get());
+        part.sourcePath = sourcePath;
         part.faceGenPart = !faceTintPath.empty();
         part.morphToBindFrame = CreateBoneFrame(inventoryRotation, transform);
         part.vertices.reserve(positions->size());
@@ -1192,9 +1195,10 @@ bool Mesh::Load(const char* nifPath)
                 part.faceGenPart = part.faceGenPart ||
                                    lightingShader->IsFaceTinted() ||
                                    (lightingShader->shaderFlags1 & nifly::SLSF1_FACEGEN_RGB_TINT) != 0;
-                if (faceOrSkinTinted) {
+                if (faceOrSkinTinted && part.shapeName != "body") {
                     // Creation Engine specular strength is not a direct match for
-                    // this renderer. Keep skin highlights present but subdued.
+                    // this renderer. Keep face and hand highlights subdued, but
+                    // preserve the Body shape's authored external-specular value.
                     part.specularStrength = std::min(part.specularStrength, 0.2f);
                 }
                 const bool hasParallax = shaderType == nifly::BSLSP_PARALLAX ||
@@ -1295,6 +1299,19 @@ bool Mesh::Load(const char* nifPath)
             }
         } else {
             part.texturePaths = std::move(rawTexturePaths);
+        }
+
+        if (part.modelSpaceNormals) {
+            // Bethesda shader slot 7 is context-sensitive: model-space-normal
+            // materials use it as an external specular map, while other
+            // materials use it as a backlight mask.
+            const std::size_t backlightSlot = TextureSlotIndex(MeshTextureSlot::Backlight);
+            const std::size_t specularSlot = TextureSlotIndex(MeshTextureSlot::Specular);
+            part.texturePaths[specularSlot] = std::move(part.texturePaths[backlightSlot]);
+            part.texturePaths[backlightSlot].clear();
+            if (!part.texturePaths[specularSlot].empty()) {
+                part.specularEnabled = true;
+            }
         }
 
         nifly::BSLightingShaderProperty* lightingShader =
@@ -1990,6 +2007,89 @@ bool Mesh::SetFaceMorphSource(RE::Actor* actor)
     return true;
 }
 
+bool Mesh::SetTextureSet(
+    const char* nifPath,
+    const char* const* texturePaths,
+    std::uint32_t texturePathCount,
+    bool modelSpaceNormals,
+    bool includeBodyShape)
+{
+    if (!mesh || !nifPath || !nifPath[0] || !texturePaths) {
+        return false;
+    }
+
+    const std::string targetPath = Lowercase(NormalizeNifPath(nifPath));
+    bool updated = false;
+    for (MeshPart& part : parts) {
+        const bool bodyShape = includeBodyShape && part.shapeName == "body";
+        if (Lowercase(part.sourcePath) != targetPath ||
+            (!bodyShape && !part.faceOrSkin)) {
+            continue;
+        }
+
+        if (bodyShape) {
+            part.skinTinted = true;
+            part.faceOrSkin = true;
+            part.auxiliaryMapMode = 2.0f;
+        }
+
+        const auto applyTexture = [&](std::uint32_t sourceIndex, MeshTextureSlot destinationSlot) {
+            if (sourceIndex >= texturePathCount) {
+                return;
+            }
+
+            const std::size_t destinationIndex = TextureSlotIndex(destinationSlot);
+            const char* texturePath = texturePaths[sourceIndex];
+            part.texturePaths[destinationIndex] = texturePath ? texturePath : "";
+            ReleaseResource(part.textureViews[destinationIndex]);
+            part.textureLoadAttempted[destinationIndex] = false;
+        };
+
+        applyTexture(0, MeshTextureSlot::Diffuse);
+        applyTexture(1, MeshTextureSlot::Normal);
+        // Armor-addon TX02 is the skin subsurface/tint texture. Skin shaders
+        // consume it through the renderer's auxiliary texture slot.
+        if (texturePathCount > 2 && texturePaths[2] && texturePaths[2][0]) {
+            applyTexture(2, MeshTextureSlot::Glow);
+        } else {
+            applyTexture(3, MeshTextureSlot::Glow);
+        }
+        applyTexture(4, MeshTextureSlot::Height);
+        applyTexture(5, MeshTextureSlot::Environment);
+        const bool usesModelSpaceNormals = part.modelSpaceNormals || modelSpaceNormals;
+        const bool hasLightingMapOverride =
+            texturePathCount > 7 &&
+            texturePaths[7] &&
+            texturePaths[7][0];
+        if (hasLightingMapOverride) {
+            applyTexture(
+                7,
+                usesModelSpaceNormals ? MeshTextureSlot::Specular : MeshTextureSlot::Backlight);
+        }
+        const bool hasSeparateSpecularMap =
+            usesModelSpaceNormals &&
+            !part.texturePaths[TextureSlotIndex(MeshTextureSlot::Specular)].empty();
+        if (hasSeparateSpecularMap) {
+            part.specularEnabled = true;
+        }
+        const std::size_t unusedLightingMapIndex = TextureSlotIndex(
+            usesModelSpaceNormals ? MeshTextureSlot::Backlight : MeshTextureSlot::Specular);
+        part.texturePaths[unusedLightingMapIndex].clear();
+        ReleaseResource(part.textureViews[unusedLightingMapIndex]);
+        part.textureLoadAttempted[unusedLightingMapIndex] = false;
+
+        part.modelSpaceNormals = usesModelSpaceNormals;
+        part.environmentEnabled =
+            !part.texturePaths[TextureSlotIndex(MeshTextureSlot::Environment)].empty();
+        updated = true;
+    }
+
+    if (updated) {
+        mesh->mustUpdate = true;
+    }
+    return updated;
+}
+
 bool Mesh::UpdateFaceMorphs()
 {
     if (!faceMorphActor) {
@@ -2258,12 +2358,17 @@ void Mesh::Draw(
         materialConstants.specularEnabled = part.specularEnabled ? 1.0f : 0.0f;
         materialConstants.hasAuxiliaryMap =
             part.textureViews[TextureSlotIndex(MeshTextureSlot::Glow)] ? 1.0f : 0.0f;
-        materialConstants.hasFaceTintMap =
-            part.textureViews[TextureSlotIndex(MeshTextureSlot::FaceTint)] ? 1.0f : 0.0f;
+        const bool hasFaceTintMap =
+            part.textureViews[TextureSlotIndex(MeshTextureSlot::FaceTint)] != nullptr;
+        materialConstants.hasFaceTintMap = hasFaceTintMap ? 1.0f : 0.0f;
         materialConstants.faceOrSkin = part.faceOrSkin ? 1.0f : 0.0f;
         materialConstants.hairMaterial = part.hairMaterial ? 1.0f : 0.0f;
         materialConstants.skinTinted = part.skinTinted ? 1.0f : 0.0f;
-        materialConstants.useBodyTint = part.skinTinted && mesh->useBodyTint ? 1.0f : 0.0f;
+        materialConstants.useBodyTint =
+            mesh->useBodyTint &&
+                    (part.skinTinted || (part.faceOrSkin && !hasFaceTintMap))
+                ? 1.0f
+                : 0.0f;
         std::copy(
             std::begin(mesh->bodyTintColor),
             std::end(mesh->bodyTintColor),

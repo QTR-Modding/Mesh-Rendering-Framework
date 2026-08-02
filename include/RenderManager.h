@@ -91,6 +91,13 @@ public:
         float value);
     static bool ClearFaceMorphs(
         MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+    static bool SetTextureSet(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+        const char* nifPath,
+        const char* const* texturePaths,
+        std::uint32_t texturePathCount,
+        bool modelSpaceNormals,
+        bool includeBodyShape);
 
     static bool Render(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
     static void RenderPending();
