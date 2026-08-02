@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -32,6 +34,8 @@ namespace MeshRenderingFrameworkAPI {
             const char* savePath = nullptr;
             bool mustUpdate = true;
             bool alwaysUpdate = false;
+            float bodyTintColor[3]{1.0f, 1.0f, 1.0f};
+            bool useBodyTint = false;
         };
 
         template <class T>
@@ -144,6 +148,167 @@ namespace MeshRenderingFrameworkAPI {
                 paths.push_back(std::move(path));
             }
             return paths;
+        }
+
+        inline void AppendUniqueNifPath(std::vector<std::string>& paths, const char* path) {
+            if (!path || !path[0]) {
+                return;
+            }
+
+            const std::string value(path);
+            if (std::find(paths.begin(), paths.end(), value) == paths.end()) {
+                paths.push_back(value);
+            }
+        }
+
+        inline std::uint32_t AppendArmorModelPaths(
+            RE::TESObjectARMO* armor,
+            RE::TESRace* race,
+            RE::SEX sex,
+            std::vector<std::string>& paths,
+            std::uint32_t excludedSlots = 0,
+            bool excludeOnAnyOverlap = false)
+        {
+            if (!armor || !race) {
+                return 0;
+            }
+
+            std::uint32_t addedSlots = 0;
+            for (RE::TESObjectARMA* armorAddon : armor->armorAddons) {
+                if (!armorAddon || !armorAddon->IsValidRace(race)) {
+                    continue;
+                }
+                const std::uint32_t addonSlots =
+                    static_cast<std::uint32_t>(*armorAddon->bipedModelData.bipedObjectSlots);
+                const std::uint32_t overlappingSlots = addonSlots & excludedSlots;
+                if ((excludeOnAnyOverlap && overlappingSlots != 0) ||
+                    (!excludeOnAnyOverlap && (addonSlots & ~excludedSlots) == 0)) {
+                    continue;
+                }
+
+                const char* modelPath = armorAddon->bipedModels[sex].GetModel();
+                if (modelPath && modelPath[0]) {
+                    AppendUniqueNifPath(paths, modelPath);
+                    addedSlots |= addonSlots;
+                }
+            }
+            return addedSlots;
+        }
+
+        inline bool NifResourceExists(const std::string& path) {
+            if (path.empty()) {
+                return false;
+            }
+
+            std::string resourcePath = path;
+            std::replace(resourcePath.begin(), resourcePath.end(), '/', '\\');
+            std::string lowerPath = resourcePath;
+            std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), [](unsigned char value) {
+                return static_cast<char>(std::tolower(value));
+            });
+            if (!lowerPath.starts_with("meshes\\")) {
+                resourcePath.insert(0, "meshes\\");
+            }
+
+            RE::BSResourceNiBinaryStream stream(resourcePath);
+            return stream.good() && stream.stream && stream.stream->totalSize > 0;
+        }
+
+        inline IMesh* CreateWholeNpc(
+            RE::TESNPC* npc,
+            uint32_t width,
+            uint32_t height,
+            bool includeDefaultOutfit = true)
+        {
+            if (!npc) {
+                return nullptr;
+            }
+
+            RE::TESRace* race = npc->GetRace();
+            if (!race) {
+                return nullptr;
+            }
+            const RE::SEX sex = npc->GetSex();
+            std::vector<std::string> componentPaths;
+
+            std::uint32_t outfitSlots = 0;
+            if (includeDefaultOutfit && npc->defaultOutfit) {
+                for (RE::TESForm* outfitItem : npc->defaultOutfit->outfitItems) {
+                    RE::TESObjectARMO* armor = outfitItem ? outfitItem->As<RE::TESObjectARMO>() : nullptr;
+                    outfitSlots |= AppendArmorModelPaths(armor, race, sex, componentPaths);
+                }
+            }
+
+            const std::size_t pathCountBeforeSkin = componentPaths.size();
+            AppendArmorModelPaths(npc->skin, race, sex, componentPaths, outfitSlots, true);
+            if (componentPaths.size() == pathCountBeforeSkin) {
+                AppendArmorModelPaths(race->skin, race, sex, componentPaths, outfitSlots, true);
+            }
+            if (componentPaths.size() == pathCountBeforeSkin) {
+                AppendArmorModelPaths(npc->farSkin, race, sex, componentPaths, outfitSlots, true);
+            }
+
+            bool addedFaceGen = false;
+            const std::vector<std::string> faceGenPaths = GetNpcFaceGenPaths(npc);
+            for (const std::string& faceGenPath : faceGenPaths) {
+                if (NifResourceExists(faceGenPath)) {
+                    AppendUniqueNifPath(componentPaths, faceGenPath.c_str());
+                    addedFaceGen = true;
+                    break;
+                }
+            }
+
+            if (!addedFaceGen && npc->headParts && npc->numHeadParts > 0) {
+                for (std::int8_t headPartIndex = 0; headPartIndex < npc->numHeadParts; ++headPartIndex) {
+                    RE::BGSHeadPart* headPart = npc->headParts[headPartIndex];
+                    if (headPart) {
+                        AppendUniqueNifPath(componentPaths, headPart->GetModel());
+                    }
+                }
+            }
+
+            if (componentPaths.empty()) {
+                return nullptr;
+            }
+
+            const char* basePath = componentPaths.front().c_str();
+            std::vector<const char*> attachmentPaths;
+            attachmentPaths.reserve(componentPaths.size() - 1);
+            for (std::size_t pathIndex = 1; pathIndex < componentPaths.size(); ++pathIndex) {
+                attachmentPaths.push_back(componentPaths[pathIndex].c_str());
+            }
+
+            IMesh* mesh = IMesh_CreateByNifPathSet(
+                &basePath,
+                1,
+                attachmentPaths.data(),
+                static_cast<uint32_t>(attachmentPaths.size()),
+                width,
+                height);
+            if (!mesh) {
+                return nullptr;
+            }
+
+            RE::TESNPC* tintNpc = npc;
+            if (tintNpc->bodyTintColor.red == 0 &&
+                tintNpc->bodyTintColor.green == 0 &&
+                tintNpc->bodyTintColor.blue == 0) {
+                RE::TESNPC* rootFaceNpc = npc->GetRootFaceNPC();
+                if (rootFaceNpc) {
+                    tintNpc = rootFaceNpc;
+                }
+            }
+
+            const RE::Color& bodyTint = tintNpc->bodyTintColor;
+            if (bodyTint.red != 0 || bodyTint.green != 0 || bodyTint.blue != 0) {
+                constexpr float byteToFloat = 1.0f / 255.0f;
+                mesh->bodyTintColor[0] = static_cast<float>(bodyTint.red) * byteToFloat;
+                mesh->bodyTintColor[1] = static_cast<float>(bodyTint.green) * byteToFloat;
+                mesh->bodyTintColor[2] = static_cast<float>(bodyTint.blue) * byteToFloat;
+                mesh->useBodyTint = true;
+                mesh->mustUpdate = true;
+            }
+            return mesh;
         }
 
         inline IMesh* CreateFromBaseObject(RE::TESBoundObject* base, uint32_t width, uint32_t  height) {
@@ -379,6 +544,31 @@ namespace MeshRenderingFrameworkAPI {
             base = nullptr;
             mesh = Internal::CreateFromNiAVObjectList(objects.data(), static_cast<uint32_t>(objects.size()), width, height);
         }
+
+    protected:
+        Mesh(Internal::IMesh* createdMesh, RE::TESBoundObject* sourceBase)
+            : mesh(createdMesh), base(sourceBase) {}
+    };
+
+    class WholeNpcMesh : public Mesh {
+    public:
+        WholeNpcMesh(
+            RE::TESNPC* npc,
+            uint32_t width,
+            uint32_t height,
+            bool includeDefaultOutfit = true)
+            : Mesh(Internal::CreateWholeNpc(npc, width, height, includeDefaultOutfit), npc) {}
+
+        WholeNpcMesh(
+            RE::FormID id,
+            uint32_t width,
+            uint32_t height,
+            bool includeDefaultOutfit = true)
+            : WholeNpcMesh(
+                RE::TESForm::LookupByID<RE::TESNPC>(id),
+                width,
+                height,
+                includeDefaultOutfit) {}
     };
 
 #ifdef ENABLE_MENU_FRAMEWORK
@@ -387,6 +577,14 @@ namespace MeshRenderingFrameworkAPI {
         bool orientationChanged = true;
         uint32_t renderWidth;
         uint32_t renderHeight;
+
+    protected:
+        OrbitMesh(
+            Internal::IMesh* createdMesh,
+            RE::TESBoundObject* sourceBase,
+            uint32_t width,
+            uint32_t height)
+            : Mesh(createdMesh, sourceBase), renderWidth(width), renderHeight(height) { ScaleUp(0.8f); }
 
     public:
         void SetOrbitOrientation(RE::NiMatrix3 orientation) {
@@ -471,6 +669,31 @@ namespace MeshRenderingFrameworkAPI {
                     "Mesh unavailable");
             }
         }
+    };
+
+    class WholeNpcOrbitMesh : public OrbitMesh {
+    public:
+        WholeNpcOrbitMesh(
+            RE::TESNPC* npc,
+            uint32_t width,
+            uint32_t height,
+            bool includeDefaultOutfit = true)
+            : OrbitMesh(
+                Internal::CreateWholeNpc(npc, width, height, includeDefaultOutfit),
+                npc,
+                width,
+                height) {}
+
+        WholeNpcOrbitMesh(
+            RE::FormID id,
+            uint32_t width,
+            uint32_t height,
+            bool includeDefaultOutfit = true)
+            : WholeNpcOrbitMesh(
+                RE::TESForm::LookupByID<RE::TESNPC>(id),
+                width,
+                height,
+                includeDefaultOutfit) {}
     };
 #endif
 }

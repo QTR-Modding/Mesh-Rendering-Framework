@@ -355,6 +355,74 @@ namespace
         return result;
     }
 
+    float DotProduct(const RE::NiPoint3& left, const RE::NiPoint3& right)
+    {
+        return left.x * right.x + left.y * right.y + left.z * right.z;
+    }
+
+    RE::NiPoint3 CrossProduct(const RE::NiPoint3& left, const RE::NiPoint3& right)
+    {
+        return {
+            left.y * right.z - left.z * right.y,
+            left.z * right.x - left.x * right.z,
+            left.x * right.y - left.y * right.x
+        };
+    }
+
+    MeshBoneFrame CreateBoneFrame(
+        const RE::NiMatrix3& inventoryRotation,
+        const nifly::MatTransform& boneToGlobal)
+    {
+        const nifly::Vector3 origin = boneToGlobal.ApplyTransform({0.0f, 0.0f, 0.0f});
+        const nifly::Vector3 x = boneToGlobal.ApplyTransform({1.0f, 0.0f, 0.0f});
+        const nifly::Vector3 y = boneToGlobal.ApplyTransform({0.0f, 1.0f, 0.0f});
+        const nifly::Vector3 z = boneToGlobal.ApplyTransform({0.0f, 0.0f, 1.0f});
+
+        MeshBoneFrame frame;
+        frame.origin = TransformPoint(inventoryRotation, origin);
+        frame.axisX = TransformPoint(inventoryRotation, x) - frame.origin;
+        frame.axisY = TransformPoint(inventoryRotation, y) - frame.origin;
+        frame.axisZ = TransformPoint(inventoryRotation, z) - frame.origin;
+        return frame;
+    }
+
+    RE::NiPoint3 TransformBetweenBoneFrames(
+        const RE::NiPoint3& value,
+        const MeshBoneFrame& source,
+        const MeshBoneFrame& target,
+        bool direction)
+    {
+        const RE::NiPoint3 relativeValue = direction ? value : value - source.origin;
+        const RE::NiPoint3 axisYCrossAxisZ = CrossProduct(source.axisY, source.axisZ);
+        const float determinant = DotProduct(source.axisX, axisYCrossAxisZ);
+        if (std::abs(determinant) <= 0.00001f) {
+            return value;
+        }
+
+        const RE::NiPoint3 local{
+            DotProduct(relativeValue, axisYCrossAxisZ) / determinant,
+            DotProduct(relativeValue, CrossProduct(source.axisZ, source.axisX)) / determinant,
+            DotProduct(relativeValue, CrossProduct(source.axisX, source.axisY)) / determinant
+        };
+        RE::NiPoint3 transformed =
+            target.axisX * local.x +
+            target.axisY * local.y +
+            target.axisZ * local.z;
+        if (!direction) {
+            transformed += target.origin;
+        }
+        return transformed;
+    }
+
+    RE::NiPoint3 NormalizeDirection(RE::NiPoint3 direction)
+    {
+        const float length = std::sqrt(DotProduct(direction, direction));
+        if (length > 0.00001f) {
+            direction /= length;
+        }
+        return direction;
+    }
+
     std::size_t TextureSlotIndex(MeshTextureSlot slot)
     {
         return static_cast<std::size_t>(slot);
@@ -453,6 +521,7 @@ MeshPart::MeshPart(MeshPart&& other) noexcept
       environmentEnabled(other.environmentEnabled),
       faceOrSkin(other.faceOrSkin),
       hairMaterial(other.hairMaterial),
+      skinTinted(other.skinTinted),
       center(other.center)
 {
     std::copy(std::begin(other.specularColor), std::end(other.specularColor), specularColor);
@@ -501,6 +570,7 @@ MeshPart& MeshPart::operator=(MeshPart&& other) noexcept
         environmentEnabled = other.environmentEnabled;
         faceOrSkin = other.faceOrSkin;
         hairMaterial = other.hairMaterial;
+        skinTinted = other.skinTinted;
         center = other.center;
     }
     return *this;
@@ -579,6 +649,7 @@ bool Mesh::Load(const char* nifPath)
     }
 
     const RE::NiMatrix3 inventoryRotation = GetInventoryRotation(file);
+    boneFrames.clear();
     const std::string faceTintPath = GetFaceTintPath(sourcePath);
     const bool hasFaceTintTexture = !faceTintPath.empty() && GameResourceExists(faceTintPath);
     RE::NiPoint3 minimum{};
@@ -613,6 +684,19 @@ bool Mesh::Load(const char* nifPath)
         const std::vector<nifly::Vector3>* normals = file.GetNormalsForShape(shape);
         const std::vector<nifly::Vector2>* uvs = file.GetUvsForShape(shape);
         const std::vector<nifly::Color4>* colors = file.GetColorsForShape(shape);
+        std::vector<std::string> boneNames;
+        if (file.GetShapeBoneList(shape, boneNames) > 0) {
+            for (const std::string& boneName : boneNames) {
+                if (boneFrames.contains(boneName)) {
+                    continue;
+                }
+
+                nifly::MatTransform boneToGlobal;
+                if (file.GetNodeTransformToGlobal(boneName, boneToGlobal)) {
+                    boneFrames.emplace(boneName, CreateBoneFrame(inventoryRotation, boneToGlobal));
+                }
+            }
+        }
         const nifly::MatTransform transform = GetShapeTransform(file, shape);
         std::vector<nifly::Vector3> posedPositions;
         std::vector<nifly::Vector3> posedNormals;
@@ -737,6 +821,7 @@ bool Mesh::Load(const char* nifPath)
             if (lightingShader) {
                 const std::uint32_t shaderType = lightingShader->GetShaderType();
                 part.hairMaterial = shaderType == nifly::BSLSP_HAIRTINT;
+                part.skinTinted = lightingShader->IsSkinTinted();
                 const bool faceOrSkinTinted =
                     lightingShader->IsFaceTinted() ||
                     lightingShader->IsSkinTinted() ||
@@ -949,6 +1034,7 @@ Mesh::Mesh(
     RE::NiPoint3 minimum{};
     RE::NiPoint3 maximum{};
     bool hasBounds = false;
+    std::unordered_map<std::string, MeshBoneFrame> bodyBoneFrames;
 
     auto appendComponent = [&](const char* path) {
         if (!path || !path[0]) {
@@ -961,18 +1047,82 @@ Mesh::Mesh(
         }
 
         const RE::NiPoint3 componentCenter = (component.mesh->boundMin + component.mesh->boundMax) * 0.5f;
+        MeshBoneFrame bodyAlignmentFrame{};
+        MeshBoneFrame componentAlignmentFrame{};
+        bool hasBoneAlignment = false;
+        const bool faceGenComponent = !GetFaceTintPath(component.sourcePath).empty();
+        if (faceGenComponent) {
+            constexpr std::array<std::string_view, 3> alignmentBones{
+                "NPC Spine2 [Spn2]",
+                "NPC L Clavicle [LClv]",
+                "NPC R Clavicle [RClv]"
+            };
+            for (const std::string_view boneName : alignmentBones) {
+                const std::string key(boneName);
+                const auto bodyBone = bodyBoneFrames.find(key);
+                const auto faceBone = component.boneFrames.find(key);
+                if (bodyBone == bodyBoneFrames.end() || faceBone == component.boneFrames.end()) {
+                    continue;
+                }
+
+                bodyAlignmentFrame = bodyBone->second;
+                componentAlignmentFrame = faceBone->second;
+                hasBoneAlignment = true;
+                logger::info(
+                    "Aligned FaceGen component {} to the complete {} bone frame",
+                    component.sourcePath,
+                    key);
+                break;
+            }
+        } else {
+            for (const auto& [boneName, boneFrame] : component.boneFrames) {
+                bodyBoneFrames.try_emplace(boneName, boneFrame);
+            }
+        }
+
         for (MeshPart& part : component.parts) {
             part.center += componentCenter;
+            if (hasBoneAlignment) {
+                part.center = TransformBetweenBoneFrames(
+                    part.center,
+                    componentAlignmentFrame,
+                    bodyAlignmentFrame,
+                    false);
+            }
             for (MeshVertex& vertex : part.vertices) {
-                vertex.position[0] += componentCenter.x;
-                vertex.position[1] += componentCenter.y;
-                vertex.position[2] += componentCenter.z;
-
-                const RE::NiPoint3 position{
-                    vertex.position[0],
-                    vertex.position[1],
-                    vertex.position[2]
+                RE::NiPoint3 position{
+                    vertex.position[0] + componentCenter.x,
+                    vertex.position[1] + componentCenter.y,
+                    vertex.position[2] + componentCenter.z
                 };
+                if (hasBoneAlignment) {
+                    position = TransformBetweenBoneFrames(
+                        position,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        false);
+                    const RE::NiPoint3 normal = NormalizeDirection(TransformBetweenBoneFrames(
+                        {vertex.normal[0], vertex.normal[1], vertex.normal[2]},
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true));
+                    vertex.normal[0] = normal.x;
+                    vertex.normal[1] = normal.y;
+                    vertex.normal[2] = normal.z;
+
+                    const RE::NiPoint3 tangent = NormalizeDirection(TransformBetweenBoneFrames(
+                        {vertex.tangent[0], vertex.tangent[1], vertex.tangent[2]},
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true));
+                    vertex.tangent[0] = tangent.x;
+                    vertex.tangent[1] = tangent.y;
+                    vertex.tangent[2] = tangent.z;
+                }
+                vertex.position[0] = position.x;
+                vertex.position[1] = position.y;
+                vertex.position[2] = position.z;
+
                 if (!hasBounds) {
                     minimum = position;
                     maximum = position;
@@ -1216,6 +1366,12 @@ void Mesh::Draw(
             part.textureViews[TextureSlotIndex(MeshTextureSlot::FaceTint)] ? 1.0f : 0.0f;
         materialConstants.faceOrSkin = part.faceOrSkin ? 1.0f : 0.0f;
         materialConstants.hairMaterial = part.hairMaterial ? 1.0f : 0.0f;
+        materialConstants.skinTinted = part.skinTinted ? 1.0f : 0.0f;
+        materialConstants.useBodyTint = part.skinTinted && mesh->useBodyTint ? 1.0f : 0.0f;
+        std::copy(
+            std::begin(mesh->bodyTintColor),
+            std::end(mesh->bodyTintColor),
+            materialConstants.bodyTintColor);
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (FAILED(context->Map(materialConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             continue;

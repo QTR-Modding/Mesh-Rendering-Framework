@@ -8,4 +8,8 @@ namespace UI {
     namespace ResourceInspector {
         void __stdcall Render();
     }
+
+    namespace WholeNpcPreview {
+        void __stdcall Render();
+    }
 };

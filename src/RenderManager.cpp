@@ -142,6 +142,11 @@ namespace
             float hasFaceTintMap;
             float faceOrSkin;
             float hairMaterial;
+            float skinTinted;
+            float useBodyTint;
+            float2 materialPadding;
+            float3 bodyTintColor;
+            float bodyTintPadding;
         };
 
         struct PixelInput
@@ -218,6 +223,9 @@ namespace
                 // the base skin diffuse; it is not itself a replacement diffuse.
                 float3 faceTint = faceTintTexture.Sample(materialSampler, uv).rgb;
                 albedo *= saturate(faceTint * 2.0f) * 5.0f;
+            }
+            if (skinTinted > 0.5f && useBodyTint > 0.5f) {
+                albedo *= bodyTintColor * 5.0f;
             }
 
             float specularMask = hasSpecularMap > 0.5f

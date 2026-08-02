@@ -2,6 +2,7 @@
 #include "MeshRenderingFrameworkAPI.h"
 
 #include <array>
+#include <unordered_map>
 
 struct MeshVertex {
     float position[3]{};
@@ -9,6 +10,13 @@ struct MeshVertex {
     float tangent[4]{1.0f, 0.0f, 0.0f, 1.0f};
     float uv[2]{};
     float color[4]{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+struct MeshBoneFrame {
+    RE::NiPoint3 origin{};
+    RE::NiPoint3 axisX{};
+    RE::NiPoint3 axisY{};
+    RE::NiPoint3 axisZ{};
 };
 
 enum class MeshTextureSlot : std::size_t {
@@ -66,6 +74,11 @@ struct MeshMaterialConstants {
     float hasFaceTintMap = 0.0f;
     float faceOrSkin = 0.0f;
     float hairMaterial = 0.0f;
+    float skinTinted = 0.0f;
+    float useBodyTint = 0.0f;
+    float materialPadding[2]{};
+    float bodyTintColor[3]{1.0f, 1.0f, 1.0f};
+    float bodyTintPadding = 0.0f;
 };
 
 static_assert(sizeof(MeshMaterialConstants) % 16 == 0);
@@ -102,6 +115,7 @@ struct MeshPart {
     bool environmentEnabled = false;
     bool faceOrSkin = false;
     bool hairMaterial = false;
+    bool skinTinted = false;
     RE::NiPoint3 center{};
 
     MeshPart() = default;
@@ -136,6 +150,7 @@ public:
     MeshRenderingFrameworkAPI::Internal::IMesh* mesh = nullptr;
     std::string sourcePath;
     std::vector<MeshPart> parts;
+    std::unordered_map<std::string, MeshBoneFrame> boneFrames;
 
     bool IsValid() const;
     bool InitializeGpuResources(ID3D11Device* device);
