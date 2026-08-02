@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstdio>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #define ENABLE_MENU_FRAMEWORK
@@ -47,6 +51,27 @@ namespace MeshRenderingFrameworkAPI {
             return function(nifPath, width, height);
         }
 
+        inline IMesh* __stdcall IMesh_CreateByNifPathSet(
+            const char* const* basePaths,
+            uint32_t basePathCount,
+            const char* const* attachmentPaths,
+            uint32_t attachmentPathCount,
+            uint32_t width,
+            uint32_t height)
+        {
+            auto function = GetFunction<decltype(&IMesh_CreateByNifPathSet)>("IMesh_CreateByNifPathSet");
+            if (!function) {
+                return nullptr;
+            }
+            return function(
+                basePaths,
+                basePathCount,
+                attachmentPaths,
+                attachmentPathCount,
+                width,
+                height);
+        }
+
         inline IMesh* __stdcall IMesh_CreateByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
             auto function = GetFunction<decltype(&IMesh_CreateByNiAVObjectList)>("IMesh_CreateByNiAVObjectList");
             if (!function) {
@@ -71,6 +96,56 @@ namespace MeshRenderingFrameworkAPI {
             return function(mesh, filePath);
         }
 
+        inline std::vector<std::string> GetNpcFaceGenPaths(RE::TESNPC* npc) {
+            if (!npc) {
+                return {};
+            }
+
+            RE::TESNPC* faceNpc = npc->GetRootFaceNPC();
+            if (!faceNpc) {
+                faceNpc = npc;
+            }
+
+            RE::TESFileArray* faceFiles = faceNpc->sourceFiles.array;
+            if (!faceFiles || faceFiles->empty() || !(*faceFiles)[0]) {
+                return {};
+            }
+
+            char formId[9]{};
+            const int written = std::snprintf(
+                formId,
+                sizeof(formId),
+                "%08X",
+                static_cast<unsigned int>(faceNpc->GetLocalFormID()));
+            if (written != 8) {
+                return {};
+            }
+
+            std::vector<std::string> paths;
+            paths.reserve(faceFiles->size());
+            // FaceGen files live under the plugin that exported them. Prefer the
+            // winning override, then fall back through its masters.
+            for (std::size_t fileIndex = faceFiles->size(); fileIndex > 0; --fileIndex) {
+                RE::TESFile* faceFile = (*faceFiles)[fileIndex - 1];
+                if (!faceFile) {
+                    continue;
+                }
+
+                const std::string_view fileName = faceFile->GetFilename();
+                if (fileName.empty()) {
+                    continue;
+                }
+
+                std::string path = "actors\\character\\FaceGenData\\FaceGeom\\";
+                path.append(fileName);
+                path.push_back('\\');
+                path.append(formId);
+                path.append(".nif");
+                paths.push_back(std::move(path));
+            }
+            return paths;
+        }
+
         inline IMesh* CreateFromBaseObject(RE::TESBoundObject* base, uint32_t width, uint32_t  height) {
             if (auto weapon = base->As<RE::TESObjectWEAP>()) {
                 if (auto first = weapon->firstPersonModelObject) {
@@ -81,6 +156,46 @@ namespace MeshRenderingFrameworkAPI {
             if (auto npc = base->As<RE::TESNPC>()) {
                 auto sex = npc->GetSex();
                 auto race = npc->GetRace();
+
+                const std::vector<std::string> faceGenPaths = GetNpcFaceGenPaths(npc);
+                std::vector<const char*> basePaths;
+                std::vector<const char*> attachmentPaths;
+                basePaths.reserve(faceGenPaths.size() + 1);
+                for (const std::string& faceGenPath : faceGenPaths) {
+                    basePaths.push_back(faceGenPath.c_str());
+                }
+
+                if (npc->headParts && npc->numHeadParts > 0) {
+                    for (std::int8_t i = 0; i < npc->numHeadParts; ++i) {
+                        RE::BGSHeadPart* headPart = npc->headParts[i];
+                        if (!headPart) {
+                            continue;
+                        }
+
+                        const char* path = headPart->GetModel();
+                        if (!path || !path[0]) {
+                            continue;
+                        }
+
+                        if (headPart->type == RE::BGSHeadPart::HeadPartType::kFace) {
+                            basePaths.push_back(path);
+                        } else {
+                            attachmentPaths.push_back(path);
+                        }
+                    }
+                }
+
+                if (!basePaths.empty()) {
+                    if (IMesh* mesh = IMesh_CreateByNifPathSet(
+                            basePaths.data(),
+                            static_cast<uint32_t>(basePaths.size()),
+                            attachmentPaths.data(),
+                            static_cast<uint32_t>(attachmentPaths.size()),
+                            width,
+                            height)) {
+                        return mesh;
+                    }
+                }
 
                 auto createFromArmor = [&](RE::TESObjectARMO* armor) -> IMesh* {
                     if (!armor || !race) {
@@ -109,15 +224,6 @@ namespace MeshRenderingFrameworkAPI {
 
                 if (auto mesh = createFromArmor(npc->farSkin)) {
                     return mesh;
-                }
-
-                for (std::int8_t i = 0; i < npc->numHeadParts; ++i) {
-                    if (auto headPart = npc->headParts[i]) {
-                        auto path = headPart->GetModel();
-                        if (path && path[0]) {
-                            return IMesh_CreateByNifPath(path, width, height);
-                        }
-                    }
                 }
             }
 
@@ -308,13 +414,10 @@ namespace MeshRenderingFrameworkAPI {
             : Mesh(objects, width, height), renderWidth(width), renderHeight(height) { ScaleUp(0.8f); }
 
         void Render(const char* name) {
-            constexpr float maxDisplayWidth = 384.0f;
-            const float availableWidth = std::max(ImGuiMCP::GetContentRegionAvail().x, 1.0f);
-            const float imageWidth = std::min({availableWidth, static_cast<float>(renderWidth), maxDisplayWidth});
-            const float aspect = renderWidth > 0
-                ? static_cast<float>(renderHeight) / static_cast<float>(renderWidth)
-                : 1.0f;
-            const ImGuiMCP::ImVec2 imageSize{imageWidth, imageWidth * aspect};
+            const ImGuiMCP::ImVec2 imageSize{
+                static_cast<float>(renderWidth),
+                static_cast<float>(renderHeight)
+            };
 
             ImGuiMCP::InvisibleButton(name, imageSize);
             const auto imageMin = ImGuiMCP::GetItemRectMin();

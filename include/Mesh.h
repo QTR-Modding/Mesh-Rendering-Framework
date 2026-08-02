@@ -21,6 +21,7 @@ enum class MeshTextureSlot : std::size_t {
     Subsurface,
     Backlight,
     Specular,
+    FaceTint,
     Count
 };
 
@@ -62,7 +63,9 @@ struct MeshMaterialConstants {
     float emissiveEnabled = 0.0f;
     float specularEnabled = 1.0f;
     float hasAuxiliaryMap = 0.0f;
-    float materialPadding[3]{};
+    float hasFaceTintMap = 0.0f;
+    float faceOrSkin = 0.0f;
+    float hairMaterial = 0.0f;
 };
 
 static_assert(sizeof(MeshMaterialConstants) % 16 == 0);
@@ -97,6 +100,8 @@ struct MeshPart {
     bool emissiveEnabled = false;
     bool specularEnabled = true;
     bool environmentEnabled = false;
+    bool faceOrSkin = false;
+    bool hairMaterial = false;
     RE::NiPoint3 center{};
 
     MeshPart() = default;
@@ -119,6 +124,13 @@ private:
 
 public:
     Mesh(const char* nifPath, uint32_t width, uint32_t height);
+    Mesh(
+        const char* const* basePaths,
+        uint32_t basePathCount,
+        const char* const* attachmentPaths,
+        uint32_t attachmentPathCount,
+        uint32_t width,
+        uint32_t height);
     ~Mesh();
 
     MeshRenderingFrameworkAPI::Internal::IMesh* mesh = nullptr;

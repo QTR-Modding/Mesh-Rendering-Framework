@@ -6,6 +6,7 @@
 
 #include <DirectXTex.h>
 #include <ExtraData.hpp>
+#include <Geometry.hpp>
 #include <NifFile.hpp>
 #include <Shaders.hpp>
 #include <d3d11.h>
@@ -16,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
 namespace
@@ -55,6 +57,20 @@ namespace
 
         bytes.resize(stream.stream->totalSize);
         return stream.read(reinterpret_cast<char*>(bytes.data()), stream.stream->totalSize);
+    }
+
+    bool GameResourceExists(const std::string& path)
+    {
+        if (path.empty()) {
+            return false;
+        }
+
+        if (std::filesystem::exists(std::filesystem::path(path))) {
+            return true;
+        }
+
+        RE::BSResourceNiBinaryStream stream(path);
+        return stream.good() && stream.stream && stream.stream->totalSize > 0;
     }
 
     std::string NormalizeResourcePath(std::string path, const std::string& rootDirectory)
@@ -97,6 +113,34 @@ namespace
         return NormalizeResourcePath(path, "textures");
     }
 
+    std::string GetFaceTintPath(const std::string& nifPath)
+    {
+        std::string normalizedPath = nifPath;
+        std::replace(normalizedPath.begin(), normalizedPath.end(), '/', '\\');
+
+        std::string lowerPath = normalizedPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), [](unsigned char value) {
+            return static_cast<char>(std::tolower(value));
+        });
+
+        constexpr std::string_view faceGeomMarker = "facegendata\\facegeom\\";
+        const std::size_t markerPosition = lowerPath.find(faceGeomMarker);
+        if (markerPosition == std::string::npos) {
+            return {};
+        }
+
+        const std::size_t suffixPosition = markerPosition + faceGeomMarker.size();
+        std::string suffix = normalizedPath.substr(suffixPosition);
+        const std::size_t extensionPosition = suffix.find_last_of('.');
+        if (extensionPosition == std::string::npos) {
+            return {};
+        }
+
+        suffix.erase(extensionPosition);
+        suffix.append(".dds");
+        return "textures\\actors\\character\\FaceGenData\\FaceTint\\" + suffix;
+    }
+
     ID3D11ShaderResourceView* LoadTexture(
         ID3D11Device* device,
         const std::string& path,
@@ -106,8 +150,10 @@ namespace
             return nullptr;
         }
 
+        const std::string resolvedPath = NormalizeTexturePath(path);
         std::vector<std::uint8_t> bytes;
-        if (!ReadGameResource(NormalizeTexturePath(path), bytes)) {
+        if (!ReadGameResource(resolvedPath, bytes)) {
+            logger::warn("Could not read texture resource {} (resolved as {})", path, resolvedPath);
             return nullptr;
         }
 
@@ -124,6 +170,10 @@ namespace
                 image);
         }
         if (FAILED(result)) {
+            logger::warn(
+                "Could not decode texture resource {}: {:08X}",
+                resolvedPath,
+                static_cast<std::uint32_t>(result));
             return nullptr;
         }
 
@@ -142,11 +192,24 @@ namespace
             0,
             creationFlags,
             &textureView);
+        if (FAILED(result)) {
+            logger::warn(
+                "Could not create texture resource view for {}: {:08X}",
+                resolvedPath,
+                static_cast<std::uint32_t>(result));
+        }
         return SUCCEEDED(result) ? textureView : nullptr;
     }
 
     nifly::MatTransform GetShapeTransform(nifly::NifFile& file, nifly::NiShape* shape)
     {
+        if (shape && shape->IsSkinned()) {
+            nifly::MatTransform globalToSkin;
+            if (file.CalcShapeTransformGlobalToSkin(shape, globalToSkin)) {
+                return globalToSkin.InverseTransform();
+            }
+        }
+
         nifly::MatTransform transform = shape->GetTransformToParent();
         nifly::NiNode* parent = file.GetParentNode(shape);
         while (parent) {
@@ -154,6 +217,91 @@ namespace
             parent = file.GetParentNode(parent);
         }
         return transform;
+    }
+
+    bool PoseSkinnedShape(
+        nifly::NifFile& file,
+        nifly::NiShape* shape,
+        const std::vector<nifly::Vector3>& positions,
+        const std::vector<nifly::Vector3>* normals,
+        std::vector<nifly::Vector3>& posedPositions,
+        std::vector<nifly::Vector3>& posedNormals)
+    {
+        if (!shape || !shape->IsSkinned() || positions.empty()) {
+            return false;
+        }
+
+        std::vector<std::string> boneNames;
+        if (file.GetShapeBoneList(shape, boneNames) == 0) {
+            return false;
+        }
+
+        posedPositions.assign(positions.size(), {});
+        if (normals) {
+            posedNormals.assign(positions.size(), {});
+        } else {
+            posedNormals.clear();
+        }
+        std::vector<float> accumulatedWeights(positions.size(), 0.0f);
+        std::size_t appliedBoneCount = 0;
+
+        for (std::uint32_t boneIndex = 0; boneIndex < boneNames.size(); ++boneIndex) {
+            nifly::MatTransform boneToGlobal;
+            nifly::MatTransform skinToBone;
+            if (!file.GetNodeTransformToGlobal(boneNames[boneIndex], boneToGlobal) ||
+                !file.GetShapeTransformSkinToBone(shape, boneIndex, skinToBone)) {
+                continue;
+            }
+
+            std::unordered_map<std::uint16_t, float> weights;
+            if (file.GetShapeBoneWeights(shape, boneIndex, weights) == 0) {
+                continue;
+            }
+
+            const nifly::MatTransform skinToGlobal = boneToGlobal.ComposeTransforms(skinToBone);
+            for (const auto& [vertexIndex, weight] : weights) {
+                if (vertexIndex >= positions.size() || weight <= 0.0f) {
+                    continue;
+                }
+
+                posedPositions[vertexIndex] += skinToGlobal.ApplyTransform(positions[vertexIndex]) * weight;
+                if (normals && vertexIndex < normals->size()) {
+                    posedNormals[vertexIndex] += skinToGlobal.ApplyTransformToDir(normals->at(vertexIndex)) * weight;
+                }
+                accumulatedWeights[vertexIndex] += weight;
+            }
+            ++appliedBoneCount;
+        }
+
+        if (appliedBoneCount == 0) {
+            posedPositions.clear();
+            posedNormals.clear();
+            return false;
+        }
+
+        const nifly::MatTransform fallbackTransform = GetShapeTransform(file, shape);
+        for (std::size_t vertexIndex = 0; vertexIndex < positions.size(); ++vertexIndex) {
+            const float weight = accumulatedWeights[vertexIndex];
+            if (weight > 0.00001f) {
+                posedPositions[vertexIndex] /= weight;
+                if (normals && vertexIndex < normals->size()) {
+                    posedNormals[vertexIndex] /= weight;
+                    posedNormals[vertexIndex].Normalize();
+                }
+            } else {
+                posedPositions[vertexIndex] = fallbackTransform.ApplyTransform(positions[vertexIndex]);
+                if (normals && vertexIndex < normals->size()) {
+                    posedNormals[vertexIndex] = fallbackTransform.ApplyTransformToDir(normals->at(vertexIndex));
+                    posedNormals[vertexIndex].Normalize();
+                }
+            }
+        }
+
+        logger::info(
+            "nifly posed skinned shape {} using {} bone(s)",
+            shape->name.get(),
+            appliedBoneCount);
+        return true;
     }
 
     bool IsShapeVisible(nifly::NifFile& file, nifly::NiShape* shape)
@@ -189,21 +337,17 @@ namespace
     }
 
     RE::NiPoint3 TransformPoint(
-        const nifly::MatTransform& transform,
         const RE::NiMatrix3& inventoryRotation,
         const nifly::Vector3& point)
     {
-        const nifly::Vector3 transformed = transform.ApplyTransform(point);
-        return inventoryRotation * RE::NiPoint3{transformed.x, transformed.y, transformed.z};
+        return inventoryRotation * RE::NiPoint3{point.x, point.y, point.z};
     }
 
     RE::NiPoint3 TransformNormal(
-        const nifly::MatTransform& transform,
         const RE::NiMatrix3& inventoryRotation,
         const nifly::Vector3& normal)
     {
-        const nifly::Vector3 transformed = transform.ApplyTransformToDir(normal);
-        RE::NiPoint3 result = inventoryRotation * RE::NiPoint3{transformed.x, transformed.y, transformed.z};
+        RE::NiPoint3 result = inventoryRotation * RE::NiPoint3{normal.x, normal.y, normal.z};
         const float length = std::sqrt(result.x * result.x + result.y * result.y + result.z * result.z);
         if (length > 0.00001f) {
             result /= length;
@@ -307,6 +451,8 @@ MeshPart::MeshPart(MeshPart&& other) noexcept
       emissiveEnabled(other.emissiveEnabled),
       specularEnabled(other.specularEnabled),
       environmentEnabled(other.environmentEnabled),
+      faceOrSkin(other.faceOrSkin),
+      hairMaterial(other.hairMaterial),
       center(other.center)
 {
     std::copy(std::begin(other.specularColor), std::end(other.specularColor), specularColor);
@@ -353,6 +499,8 @@ MeshPart& MeshPart::operator=(MeshPart&& other) noexcept
         emissiveEnabled = other.emissiveEnabled;
         specularEnabled = other.specularEnabled;
         environmentEnabled = other.environmentEnabled;
+        faceOrSkin = other.faceOrSkin;
+        hairMaterial = other.hairMaterial;
         center = other.center;
     }
     return *this;
@@ -431,6 +579,8 @@ bool Mesh::Load(const char* nifPath)
     }
 
     const RE::NiMatrix3 inventoryRotation = GetInventoryRotation(file);
+    const std::string faceTintPath = GetFaceTintPath(sourcePath);
+    const bool hasFaceTintTexture = !faceTintPath.empty() && GameResourceExists(faceTintPath);
     RE::NiPoint3 minimum{};
     RE::NiPoint3 maximum{};
     bool hasBounds = false;
@@ -438,7 +588,15 @@ bool Mesh::Load(const char* nifPath)
     std::size_t totalTriangleCount = 0;
 
     for (nifly::NiShape* shape : file.GetShapes()) {
-        if (!shape || !IsShapeVisible(file, shape) || !shape->HasVertices()) {
+        if (!shape || !IsShapeVisible(file, shape)) {
+            continue;
+        }
+
+        // Head and FaceGen meshes commonly use BSDynamicTriShape, which keeps
+        // positions in dynamicData and intentionally clears the VF_VERTEX flag.
+        const bool hasReadableVertices = shape->HasVertices() ||
+                                         dynamic_cast<nifly::BSDynamicTriShape*>(shape) != nullptr;
+        if (!hasReadableVertices) {
             continue;
         }
 
@@ -456,13 +614,32 @@ bool Mesh::Load(const char* nifPath)
         const std::vector<nifly::Vector2>* uvs = file.GetUvsForShape(shape);
         const std::vector<nifly::Color4>* colors = file.GetColorsForShape(shape);
         const nifly::MatTransform transform = GetShapeTransform(file, shape);
+        std::vector<nifly::Vector3> posedPositions;
+        std::vector<nifly::Vector3> posedNormals;
+        const bool hasSkinPose = PoseSkinnedShape(
+            file,
+            shape,
+            *positions,
+            normals,
+            posedPositions,
+            posedNormals);
 
         MeshPart part;
         part.vertices.reserve(positions->size());
         for (std::size_t index = 0; index < positions->size(); ++index) {
-            const RE::NiPoint3 position = TransformPoint(transform, inventoryRotation, positions->at(index));
+            const nifly::Vector3 transformedPosition = hasSkinPose
+                ? posedPositions[index]
+                : transform.ApplyTransform(positions->at(index));
+            const RE::NiPoint3 position = TransformPoint(inventoryRotation, transformedPosition);
+
+            nifly::Vector3 transformedNormal;
+            if (normals && index < normals->size()) {
+                transformedNormal = hasSkinPose
+                    ? posedNormals[index]
+                    : transform.ApplyTransformToDir(normals->at(index));
+            }
             const RE::NiPoint3 normal = normals && index < normals->size()
-                ? TransformNormal(transform, inventoryRotation, normals->at(index))
+                ? TransformNormal(inventoryRotation, transformedNormal)
                 : RE::NiPoint3{0.0f, 1.0f, 0.0f};
 
             MeshVertex vertex{};
@@ -508,9 +685,12 @@ bool Mesh::Load(const char* nifPath)
         if (alphaProperty) {
             const bool alphaBlend = (alphaProperty->flags & alphaBlendFlag) != 0;
             const bool alphaTest = (alphaProperty->flags & alphaTestFlag) != 0;
-            part.alphaMode = alphaBlend
-                ? MeshAlphaMode::Blend
-                : (alphaTest ? MeshAlphaMode::Cutout : MeshAlphaMode::Opaque);
+            // Hair commonly enables both blending and testing. Prefer the
+            // tested, depth-writing pass so overlapping hair cards do not
+            // expose their individual triangles through one another.
+            part.alphaMode = alphaTest
+                ? MeshAlphaMode::Cutout
+                : (alphaBlend ? MeshAlphaMode::Blend : MeshAlphaMode::Opaque);
             part.alphaThreshold = alphaTest
                 ? static_cast<float>(alphaProperty->threshold) / 255.0f
                 : -1.0f;
@@ -519,7 +699,7 @@ bool Mesh::Load(const char* nifPath)
         nifly::NiShader* shader = file.GetShader(shape);
         if (shader) {
             part.materialAlpha = std::clamp(shader->GetAlpha(), 0.0f, 1.0f);
-            if (part.materialAlpha < 0.999f) {
+            if (part.materialAlpha < 0.999f && part.alphaMode != MeshAlphaMode::Cutout) {
                 part.alphaMode = MeshAlphaMode::Blend;
             }
 
@@ -556,6 +736,17 @@ bool Mesh::Load(const char* nifPath)
                 dynamic_cast<nifly::BSLightingShaderProperty*>(shader);
             if (lightingShader) {
                 const std::uint32_t shaderType = lightingShader->GetShaderType();
+                part.hairMaterial = shaderType == nifly::BSLSP_HAIRTINT;
+                const bool faceOrSkinTinted =
+                    lightingShader->IsFaceTinted() ||
+                    lightingShader->IsSkinTinted() ||
+                    (lightingShader->shaderFlags1 & nifly::SLSF1_FACEGEN_RGB_TINT) != 0;
+                part.faceOrSkin = faceOrSkinTinted;
+                if (faceOrSkinTinted) {
+                    // Creation Engine specular strength is not a direct match for
+                    // this renderer. Keep skin highlights present but subdued.
+                    part.specularStrength = std::min(part.specularStrength, 0.2f);
+                }
                 const bool hasParallax = shaderType == nifly::BSLSP_PARALLAX ||
                                          shaderType == nifly::BSLSP_PARALLAXOCC ||
                                          shaderType == nifly::BSLSP_MULTILAYERPARALLAX;
@@ -656,6 +847,16 @@ bool Mesh::Load(const char* nifPath)
             part.texturePaths = std::move(rawTexturePaths);
         }
 
+        nifly::BSLightingShaderProperty* lightingShader =
+            dynamic_cast<nifly::BSLightingShaderProperty*>(shader);
+        if (hasFaceTintTexture && lightingShader && part.faceOrSkin) {
+            // FaceTint is a neutral detail/tint layer. The face's actual base
+            // diffuse remains texture slot 0 and the two are combined in HLSL.
+            part.texturePaths[TextureSlotIndex(MeshTextureSlot::FaceTint)] = faceTintPath;
+            part.texturePaths[TextureSlotIndex(MeshTextureSlot::Environment)].clear();
+            part.faceOrSkin = true;
+        }
+
         nifly::BSEffectShaderProperty* effectShader =
             dynamic_cast<nifly::BSEffectShaderProperty*>(shader);
         if (effectShader) {
@@ -735,6 +936,110 @@ Mesh::Mesh(const char* nifPath, uint32_t width, uint32_t height)
     }
 }
 
+Mesh::Mesh(
+    const char* const* basePaths,
+    uint32_t basePathCount,
+    const char* const* attachmentPaths,
+    uint32_t attachmentPathCount,
+    uint32_t width,
+    uint32_t height)
+{
+    Initialize(width, height);
+
+    RE::NiPoint3 minimum{};
+    RE::NiPoint3 maximum{};
+    bool hasBounds = false;
+
+    auto appendComponent = [&](const char* path) {
+        if (!path || !path[0]) {
+            return false;
+        }
+
+        Mesh component(path, width, height);
+        if (!component.IsValid()) {
+            return false;
+        }
+
+        const RE::NiPoint3 componentCenter = (component.mesh->boundMin + component.mesh->boundMax) * 0.5f;
+        for (MeshPart& part : component.parts) {
+            part.center += componentCenter;
+            for (MeshVertex& vertex : part.vertices) {
+                vertex.position[0] += componentCenter.x;
+                vertex.position[1] += componentCenter.y;
+                vertex.position[2] += componentCenter.z;
+
+                const RE::NiPoint3 position{
+                    vertex.position[0],
+                    vertex.position[1],
+                    vertex.position[2]
+                };
+                if (!hasBounds) {
+                    minimum = position;
+                    maximum = position;
+                    hasBounds = true;
+                } else {
+                    minimum.x = std::min(minimum.x, position.x);
+                    minimum.y = std::min(minimum.y, position.y);
+                    minimum.z = std::min(minimum.z, position.z);
+                    maximum.x = std::max(maximum.x, position.x);
+                    maximum.y = std::max(maximum.y, position.y);
+                    maximum.z = std::max(maximum.z, position.z);
+                }
+            }
+            parts.push_back(std::move(part));
+        }
+
+        if (!sourcePath.empty()) {
+            sourcePath.append("; ");
+        }
+        sourcePath.append(component.sourcePath);
+        return true;
+    };
+
+    bool loadedBase = false;
+    if (basePaths) {
+        for (uint32_t pathIndex = 0; pathIndex < basePathCount; ++pathIndex) {
+            if (appendComponent(basePaths[pathIndex])) {
+                loadedBase = true;
+                break;
+            }
+        }
+    }
+    if (!loadedBase) {
+        return;
+    }
+
+    const bool baseIncludesHeadParts = !GetFaceTintPath(sourcePath).empty();
+    if (attachmentPaths && !baseIncludesHeadParts) {
+        for (uint32_t pathIndex = 0; pathIndex < attachmentPathCount; ++pathIndex) {
+            appendComponent(attachmentPaths[pathIndex]);
+        }
+    }
+    if (!hasBounds || parts.empty()) {
+        return;
+    }
+
+    mesh->boundMin = minimum;
+    mesh->boundMax = maximum;
+    const RE::NiPoint3 center = (minimum + maximum) * 0.5f;
+    for (MeshPart& part : parts) {
+        part.center -= center;
+        for (MeshVertex& vertex : part.vertices) {
+            vertex.position[0] -= center.x;
+            vertex.position[1] -= center.y;
+            vertex.position[2] -= center.z;
+            const float radius = std::sqrt(
+                vertex.position[0] * vertex.position[0] +
+                vertex.position[1] * vertex.position[1] +
+                vertex.position[2] * vertex.position[2]);
+            boundingRadius = std::max(boundingRadius, radius);
+        }
+    }
+
+    logger::info("nifly assembled composite mesh from {}", sourcePath);
+    Fit(RE::NiPoint2{0.0f, 0.0f}, RE::NiPoint2{static_cast<float>(width), static_cast<float>(height)});
+}
+
 Mesh::~Mesh()
 {
     if (mesh) {
@@ -804,15 +1109,18 @@ bool Mesh::InitializeGpuResources(ID3D11Device* device)
                                       textureSlot == MeshTextureSlot::Glow ||
                                       textureSlot == MeshTextureSlot::Environment ||
                                       textureSlot == MeshTextureSlot::Subsurface ||
-                                      textureSlot == MeshTextureSlot::Backlight;
+                                      textureSlot == MeshTextureSlot::Backlight ||
+                                      textureSlot == MeshTextureSlot::FaceTint;
             part.textureViews[textureIndex] = LoadTexture(
                 device,
                 part.texturePaths[textureIndex],
                 colorTexture);
             if (!part.textureViews[textureIndex]) {
+                const std::string resolvedTexturePath = NormalizeTexturePath(part.texturePaths[textureIndex]);
                 logger::warn(
-                    "Could not load NIF texture {} for {}",
+                    "Could not load NIF texture {} (resolved as {}) for {}",
                     part.texturePaths[textureIndex],
+                    resolvedTexturePath,
                     sourcePath);
             }
         }
@@ -904,6 +1212,10 @@ void Mesh::Draw(
         materialConstants.specularEnabled = part.specularEnabled ? 1.0f : 0.0f;
         materialConstants.hasAuxiliaryMap =
             part.textureViews[TextureSlotIndex(MeshTextureSlot::Glow)] ? 1.0f : 0.0f;
+        materialConstants.hasFaceTintMap =
+            part.textureViews[TextureSlotIndex(MeshTextureSlot::FaceTint)] ? 1.0f : 0.0f;
+        materialConstants.faceOrSkin = part.faceOrSkin ? 1.0f : 0.0f;
+        materialConstants.hairMaterial = part.hairMaterial ? 1.0f : 0.0f;
         D3D11_MAPPED_SUBRESOURCE mapped{};
         if (FAILED(context->Map(materialConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             continue;

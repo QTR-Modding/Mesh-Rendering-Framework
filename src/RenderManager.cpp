@@ -95,6 +95,7 @@ namespace
         Texture2D subsurfaceTexture : register(t6);
         Texture2D backlightTexture : register(t7);
         Texture2D specularTexture : register(t8);
+        Texture2D faceTintTexture : register(t9);
         SamplerState materialSampler : register(s0);
 
         cbuffer SceneConstants : register(b0)
@@ -138,7 +139,9 @@ namespace
             float emissiveEnabled;
             float specularEnabled;
             float hasAuxiliaryMap;
-            float3 materialPadding;
+            float hasFaceTintMap;
+            float faceOrSkin;
+            float hairMaterial;
         };
 
         struct PixelInput
@@ -167,9 +170,10 @@ namespace
             return (diffuseLight + specularLight) * lightColors[lightIndex].rgb;
         }
 
-        float4 main(PixelInput input) : SV_TARGET
+        float4 main(PixelInput input, bool frontFacing : SV_IsFrontFace) : SV_TARGET
         {
-            float3 geometricNormal = normalize(input.normal);
+            float faceSign = hairMaterial > 0.5f && !frontFacing ? -1.0f : 1.0f;
+            float3 geometricNormal = normalize(input.normal) * faceSign;
             float3 tangent = normalize(input.tangent.xyz - geometricNormal * dot(input.tangent.xyz, geometricNormal));
             float3 bitangent = normalize(cross(geometricNormal, tangent)) * input.tangent.w;
             float3x3 tangentToWorld = float3x3(tangent, bitangent, geometricNormal);
@@ -194,7 +198,7 @@ namespace
             if (hasNormalMap > 0.5f) {
                 if (modelSpaceNormals > 0.5f) {
                     float3 mappedNormal = normalize(normalSample.xyz * 2.0f - 1.0f);
-                    normal = normalize(mul(mappedNormal, (float3x3)world));
+                    normal = normalize(mul(mappedNormal, (float3x3)world)) * faceSign;
                 } else {
                     float2 mappedXY = normalSample.xy * 2.0f - 1.0f;
                     float mappedZ = sqrt(saturate(1.0f - dot(mappedXY, mappedXY)));
@@ -208,6 +212,12 @@ namespace
             } else if (auxiliaryMapMode > 3.5f && hasSubsurfaceMap > 0.5f) {
                 float grayscaleMask = subsurfaceTexture.Sample(materialSampler, uv).r;
                 albedo *= lerp(float3(1.0f, 1.0f, 1.0f), tintColor, grayscaleMask);
+            }
+            if (hasFaceTintMap > 0.5f) {
+                // FaceTint is authored around neutral mid-gray and modulates
+                // the base skin diffuse; it is not itself a replacement diffuse.
+                float3 faceTint = faceTintTexture.Sample(materialSampler, uv).rgb;
+                albedo *= saturate(faceTint * 2.0f) * 5.0f;
             }
 
             float specularMask = hasSpecularMap > 0.5f
@@ -258,8 +268,8 @@ namespace
             float luminance = max(dot(positiveColor, float3(0.2126f, 0.7152f, 0.0722f)), 0.00001f);
             float displayLuminance = pow(saturate(luminance), 1.0f / 1.8f);
             float3 displayColor = saturate(positiveColor * (displayLuminance / luminance));
-            // Temper saturation without changing the corrected luminance.
-            displayColor = lerp(displayLuminance.xxx, displayColor, 0.5f);
+            float displaySaturation = faceOrSkin > 0.5f ? 0.5f : 0.5f;
+            displayColor = lerp(displayLuminance.xxx, displayColor, displaySaturation);
             return float4(displayColor, outputAlpha);
         }
     )";
@@ -347,6 +357,35 @@ MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNifPAth(
 
     std::unique_lock lock(mutex);
     Mesh* loadedMesh = new Mesh(nifPath, width, height);
+    if (!loadedMesh->IsValid()) {
+        delete loadedMesh;
+        return nullptr;
+    }
+
+    meshes[loadedMesh->mesh] = loadedMesh;
+    return loadedMesh->mesh;
+}
+
+MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNifPathSet(
+    const char* const* basePaths,
+    uint32_t basePathCount,
+    const char* const* attachmentPaths,
+    uint32_t attachmentPathCount,
+    uint32_t width,
+    uint32_t height)
+{
+    if (!basePaths || basePathCount == 0 || width == 0 || height == 0) {
+        return nullptr;
+    }
+
+    std::unique_lock lock(mutex);
+    Mesh* loadedMesh = new Mesh(
+        basePaths,
+        basePathCount,
+        attachmentPaths,
+        attachmentPathCount,
+        width,
+        height);
     if (!loadedMesh->IsValid()) {
         delete loadedMesh;
         return nullptr;
@@ -648,7 +687,8 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
         fallbackWhiteTexture,
         fallbackBlackTexture,
         fallbackBlackTexture,
-        fallbackBlackTexture
+        fallbackBlackTexture,
+        fallbackWhiteTexture
     };
 
     D3D11_MAPPED_SUBRESOURCE mapped{};

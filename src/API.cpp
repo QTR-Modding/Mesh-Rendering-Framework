@@ -33,6 +33,31 @@ MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNifPath(const char* ni
     return mesh;
 }
 
+MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNifPathSet(
+    const char* const* basePaths,
+    uint32_t basePathCount,
+    const char* const* attachmentPaths,
+    uint32_t attachmentPathCount,
+    uint32_t width,
+    uint32_t height)
+{
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh = RenderManager::AddByNifPathSet(
+        basePaths,
+        basePathCount,
+        attachmentPaths,
+        attachmentPathCount,
+        width,
+        height);
+    if (mesh) {
+        AddRenderTargetReference(width, height);
+        if (!RenderManager::Render(mesh)) {
+            ::IMesh_Delete(mesh);
+            return nullptr;
+        }
+    }
+    return mesh;
+}
+
 MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height) {
     if (!objects || objectCount == 0) {
         return nullptr;
