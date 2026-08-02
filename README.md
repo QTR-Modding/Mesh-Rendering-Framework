@@ -38,3 +38,9 @@ The mesh pipeline uses its own deferred context and off-screen color/depth resou
 The path-based and form-based APIs load loose or archived game resources. NIF paths may be passed either as full resource paths (`meshes\weapons\iron\Longsword.nif`) or as model paths returned by game forms (`weapons\iron\Longsword.nif`); the renderer normalizes the latter under `meshes\`. The legacy `NiAVObject` list overloads remain in the public header for ABI compatibility, but return `nullptr`: nifly consumes serialized NIF streams and cannot reconstruct one from arbitrary live scene objects.
 
 The public API and its original create, save, and delete exports remain unchanged, so existing copied API headers continue to work.
+
+NPC meshes created from a unique loaded actor automatically follow that actor's live FaceGen expression, modifier, and phoneme morphs. For non-unique actors, call `Mesh::SetFaceMorphSource(actor)` after creating the mesh to select the actor instance whose live face should be mirrored.
+
+`Mesh::SetExpression(expression, value)` applies an NPC expression directly from the default TRI files of its head parts. This path does not require a loaded actor and works independently of Skyrim's paused FaceGen update. `Mesh::SetMorph(triPath, morphName, value)` and `Mesh::ClearFaceMorphs()` expose the lower-level direct morph controls.
+
+Skyrim HKX clips animate the skeleton. Use direct TRI expressions for independent rendered faces, or `SetFaceMorphSource` when live expression, modifier, and phoneme mirroring is desired.

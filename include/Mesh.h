@@ -93,6 +93,7 @@ struct MeshMaterialConstants {
 static_assert(sizeof(MeshMaterialConstants) % 16 == 0);
 
 struct MeshPart {
+    std::string shapeName;
     std::vector<MeshVertex> vertices;
     std::vector<std::uint16_t> indices;
     std::array<std::string, MeshTextureSlotCount> texturePaths;
@@ -125,11 +126,16 @@ struct MeshPart {
     bool faceOrSkin = false;
     bool hairMaterial = false;
     bool skinTinted = false;
+    bool faceGenPart = false;
     bool vertexBufferDirty = false;
     RE::NiPoint3 center{};
     std::vector<MeshVertex> bindVertices;
+    std::vector<MeshVertex> morphBaseVertices;
+    std::vector<RE::NiPoint3> morphSourcePositions;
+    MeshBoneFrame morphToBindFrame{};
     std::vector<std::string> skinBoneNames;
     std::vector<MeshBoneFrame> bindBoneFrames;
+    std::vector<MeshBoneFrame> morphToBindBoneFrames;
     std::vector<MeshSkinWeight> skinWeights;
 
     MeshPart() = default;
@@ -149,9 +155,12 @@ private:
     RE::NiPoint3 animationCenter{};
     RE::NiMatrix3 animationRotation{};
     std::unique_ptr<GameAnimation> animation;
+    RE::ActorHandle faceMorphActor;
     void Fit(RE::NiPoint2 position, RE::NiPoint2 scale);
     void Initialize(uint32_t width, uint32_t height);
     bool Load(const char* nifPath);
+    bool ApplyMorphDeltas(MeshPart& part, const std::vector<RE::NiPoint3>& sourceDeltas);
+    bool UpdateFaceMorphs();
 
 public:
     Mesh(const char* nifPath, uint32_t width, uint32_t height);
@@ -178,6 +187,9 @@ public:
         const MeshRenderingFrameworkAPI::BoneTransform* transforms,
         uint32_t transformCount);
     bool PlayAnimation(const char* animationPath, const char* skeletonPath, bool loop);
+    bool SetMorph(const char* triPath, const char* morphName, float value);
+    bool ClearFaceMorphs();
+    bool SetFaceMorphSource(RE::Actor* actor);
     bool UpdateAnimation();
     void Draw(
         ID3D11DeviceContext* context,

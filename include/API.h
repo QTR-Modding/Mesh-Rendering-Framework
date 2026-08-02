@@ -24,5 +24,15 @@ FUNCTION_PREFIX bool IMesh_PlayAnimation(
     const char* animationPath,
     const char* skeletonPath,
     bool loop);
+FUNCTION_PREFIX bool IMesh_SetFaceMorphSource(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    RE::Actor* actor);
+FUNCTION_PREFIX bool IMesh_SetMorph(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* triPath,
+    const char* morphName,
+    float value);
+FUNCTION_PREFIX bool IMesh_ClearFaceMorphs(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
 FUNCTION_PREFIX void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
 FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filePath);

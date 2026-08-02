@@ -81,6 +81,16 @@ public:
         const char* animationPath,
         const char* skeletonPath,
         bool loop);
+    static bool SetFaceMorphSource(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+        RE::Actor* actor);
+    static bool SetMorph(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+        const char* triPath,
+        const char* morphName,
+        float value);
+    static bool ClearFaceMorphs(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
 
     static bool Render(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
     static void RenderPending();

@@ -104,6 +104,28 @@ bool IMesh_PlayAnimation(
     return RenderManager::PlayAnimation(mesh, animationPath, skeletonPath, loop);
 }
 
+bool IMesh_SetFaceMorphSource(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    RE::Actor* actor)
+{
+    return RenderManager::SetFaceMorphSource(mesh, actor);
+}
+
+bool IMesh_SetMorph(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* triPath,
+    const char* morphName,
+    float value)
+{
+    return RenderManager::SetMorph(mesh, triPath, morphName, value);
+}
+
+bool IMesh_ClearFaceMorphs(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh)
+{
+    return RenderManager::ClearFaceMorphs(mesh);
+}
+
 void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh) { 
     RenderManager::Delete(mesh);
 }

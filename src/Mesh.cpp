@@ -24,6 +24,50 @@
 
 namespace
 {
+    struct LiveFaceShape
+    {
+        std::string name;
+        std::vector<RE::NiPoint3> positions;
+        bool used = false;
+    };
+
+    struct TriMorph
+    {
+        std::vector<RE::NiPoint3> basePositions;
+        std::vector<RE::NiPoint3> deltas;
+    };
+
+    template <class T>
+    bool ReadBinaryValue(
+        const std::vector<std::uint8_t>& bytes,
+        std::size_t& offset,
+        T& value)
+    {
+        if (offset > bytes.size() || sizeof(T) > bytes.size() - offset) {
+            return false;
+        }
+        std::memcpy(&value, bytes.data() + offset, sizeof(T));
+        offset += sizeof(T);
+        return true;
+    }
+
+    bool SkipBinaryValues(
+        const std::vector<std::uint8_t>& bytes,
+        std::size_t& offset,
+        std::size_t count,
+        std::size_t valueSize)
+    {
+        if (valueSize > 0 && count > std::numeric_limits<std::size_t>::max() / valueSize) {
+            return false;
+        }
+        const std::size_t byteCount = count * valueSize;
+        if (offset > bytes.size() || byteCount > bytes.size() - offset) {
+            return false;
+        }
+        offset += byteCount;
+        return true;
+    }
+
     template <class T>
     void ReleaseResource(T*& resource)
     {
@@ -59,6 +103,55 @@ namespace
 
         bytes.resize(stream.stream->totalSize);
         return stream.read(reinterpret_cast<char*>(bytes.data()), stream.stream->totalSize);
+    }
+
+    std::string Lowercase(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        return value;
+    }
+
+    void CollectLiveFaceShapes(RE::NiAVObject* object, std::vector<LiveFaceShape>& shapes)
+    {
+        if (!object) {
+            return;
+        }
+
+        RE::BSDynamicTriShape* dynamicShape = object->AsDynamicTriShape();
+        if (dynamicShape) {
+            RE::BSDynamicTriShape::DYNAMIC_TRISHAPE_RUNTIME_DATA& dynamicData =
+                dynamicShape->GetDynamicTrishapeRuntimeData();
+            const std::uint16_t vertexCount =
+                dynamicShape->GetTrishapeRuntimeData().vertexCount;
+            const std::size_t requiredSize =
+                static_cast<std::size_t>(vertexCount) * sizeof(float) * 4;
+            if (dynamicData.dynamicData && vertexCount > 0 && dynamicData.dataSize >= requiredSize) {
+                LiveFaceShape shape;
+                shape.name = Lowercase(dynamicShape->name.c_str());
+                shape.positions.resize(vertexCount);
+
+                RE::BSSpinLockGuard lock(dynamicData.lock);
+                const float* source = static_cast<const float*>(dynamicData.dynamicData);
+                for (std::size_t vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex) {
+                    shape.positions[vertexIndex] = {
+                        source[vertexIndex * 4],
+                        source[vertexIndex * 4 + 1],
+                        source[vertexIndex * 4 + 2]
+                    };
+                }
+                shapes.push_back(std::move(shape));
+            }
+        }
+
+        RE::NiNode* node = object->AsNode();
+        if (!node) {
+            return;
+        }
+        for (const RE::NiPointer<RE::NiAVObject>& child : node->GetChildren()) {
+            CollectLiveFaceShapes(child.get(), shapes);
+        }
     }
 
     bool GameResourceExists(const std::string& path)
@@ -108,6 +201,120 @@ namespace
     std::string NormalizeNifPath(const std::string& path)
     {
         return NormalizeResourcePath(path, "meshes");
+    }
+
+    bool ReadTriMorph(
+        const std::string& triPath,
+        const std::string& morphName,
+        TriMorph& morph)
+    {
+        const std::string resolvedPath = NormalizeNifPath(triPath);
+        std::vector<std::uint8_t> bytes;
+        if (!ReadGameResource(resolvedPath, bytes) || bytes.size() < 64) {
+            logger::warn("Could not read TRI resource {} (resolved as {})", triPath, resolvedPath);
+            return false;
+        }
+
+        constexpr std::string_view signature = "FRTRI003";
+        if (std::memcmp(bytes.data(), signature.data(), signature.size()) != 0) {
+            logger::warn("Unsupported TRI signature in {}", resolvedPath);
+            return false;
+        }
+
+        std::size_t offset = signature.size();
+        std::array<std::uint32_t, 10> header{};
+        for (std::uint32_t& value : header) {
+            if (!ReadBinaryValue(bytes, offset, value)) {
+                return false;
+            }
+        }
+        if (!SkipBinaryValues(bytes, offset, 16, sizeof(std::uint8_t))) {
+            return false;
+        }
+
+        const std::uint32_t vertexCount = header[0];
+        const std::uint32_t faceCount = header[1];
+        const std::uint32_t quadCount = header[2];
+        const std::uint32_t labelledVertexCount = header[3];
+        const std::uint32_t labelledSurfacePointCount = header[4];
+        const std::uint32_t uvCount = header[5];
+        const std::uint32_t morphCount = header[7];
+        const std::uint32_t additionalVertexCount = header[9];
+        if (vertexCount == 0 ||
+            quadCount != 0 ||
+            labelledVertexCount != 0 ||
+            labelledSurfacePointCount != 0) {
+            logger::warn("Unsupported TRI layout in {}", resolvedPath);
+            return false;
+        }
+
+        morph.basePositions.resize(vertexCount);
+        for (RE::NiPoint3& position : morph.basePositions) {
+            if (!ReadBinaryValue(bytes, offset, position.x) ||
+                !ReadBinaryValue(bytes, offset, position.y) ||
+                !ReadBinaryValue(bytes, offset, position.z)) {
+                return false;
+            }
+        }
+
+        if (!SkipBinaryValues(bytes, offset, additionalVertexCount, sizeof(float) * 3) ||
+            !SkipBinaryValues(bytes, offset, faceCount, sizeof(std::uint32_t) * 3) ||
+            !SkipBinaryValues(bytes, offset, uvCount, sizeof(float) * 2) ||
+            !SkipBinaryValues(bytes, offset, faceCount, sizeof(std::uint32_t) * 3)) {
+            return false;
+        }
+
+        const std::string targetName = Lowercase(morphName);
+        for (std::uint32_t morphIndex = 0; morphIndex < morphCount; ++morphIndex) {
+            std::uint32_t nameLength = 0;
+            if (!ReadBinaryValue(bytes, offset, nameLength) ||
+                offset > bytes.size() ||
+                nameLength > bytes.size() - offset) {
+                return false;
+            }
+
+            std::string name(
+                reinterpret_cast<const char*>(bytes.data() + offset),
+                nameLength);
+            offset += nameLength;
+            while (!name.empty() && name.back() == '\0') {
+                name.pop_back();
+            }
+
+            float scale = 0.0f;
+            if (!ReadBinaryValue(bytes, offset, scale)) {
+                return false;
+            }
+
+            if (Lowercase(name) != targetName) {
+                if (!SkipBinaryValues(bytes, offset, vertexCount, sizeof(std::int16_t) * 3)) {
+                    return false;
+                }
+                continue;
+            }
+
+            morph.deltas.resize(vertexCount);
+            for (RE::NiPoint3& delta : morph.deltas) {
+                std::int16_t x = 0;
+                std::int16_t y = 0;
+                std::int16_t z = 0;
+                if (!ReadBinaryValue(bytes, offset, x) ||
+                    !ReadBinaryValue(bytes, offset, y) ||
+                    !ReadBinaryValue(bytes, offset, z)) {
+                    morph.deltas.clear();
+                    return false;
+                }
+                delta = {
+                    static_cast<float>(x) * scale,
+                    static_cast<float>(y) * scale,
+                    static_cast<float>(z) * scale
+                };
+            }
+            return true;
+        }
+
+        logger::warn("TRI morph {} was not found in {}", morphName, resolvedPath);
+        return false;
     }
 
     std::string NormalizeTexturePath(const std::string& path)
@@ -573,7 +780,8 @@ namespace
 }
 
 MeshPart::MeshPart(MeshPart&& other) noexcept
-    : vertices(std::move(other.vertices)),
+    : shapeName(std::move(other.shapeName)),
+      vertices(std::move(other.vertices)),
       indices(std::move(other.indices)),
       texturePaths(std::move(other.texturePaths)),
       vertexBuffer(std::exchange(other.vertexBuffer, nullptr)),
@@ -604,11 +812,16 @@ MeshPart::MeshPart(MeshPart&& other) noexcept
       faceOrSkin(other.faceOrSkin),
       hairMaterial(other.hairMaterial),
       skinTinted(other.skinTinted),
+      faceGenPart(other.faceGenPart),
       vertexBufferDirty(other.vertexBufferDirty),
       center(other.center),
       bindVertices(std::move(other.bindVertices)),
+      morphBaseVertices(std::move(other.morphBaseVertices)),
+      morphSourcePositions(std::move(other.morphSourcePositions)),
+      morphToBindFrame(other.morphToBindFrame),
       skinBoneNames(std::move(other.skinBoneNames)),
       bindBoneFrames(std::move(other.bindBoneFrames)),
+      morphToBindBoneFrames(std::move(other.morphToBindBoneFrames)),
       skinWeights(std::move(other.skinWeights))
 {
     std::copy(std::begin(other.specularColor), std::end(other.specularColor), specularColor);
@@ -622,6 +835,7 @@ MeshPart& MeshPart::operator=(MeshPart&& other) noexcept
 {
     if (this != &other) {
         ResetGpuResources();
+        shapeName = std::move(other.shapeName);
         vertices = std::move(other.vertices);
         indices = std::move(other.indices);
         texturePaths = std::move(other.texturePaths);
@@ -658,11 +872,16 @@ MeshPart& MeshPart::operator=(MeshPart&& other) noexcept
         faceOrSkin = other.faceOrSkin;
         hairMaterial = other.hairMaterial;
         skinTinted = other.skinTinted;
+        faceGenPart = other.faceGenPart;
         vertexBufferDirty = other.vertexBufferDirty;
         center = other.center;
         bindVertices = std::move(other.bindVertices);
+        morphBaseVertices = std::move(other.morphBaseVertices);
+        morphSourcePositions = std::move(other.morphSourcePositions);
+        morphToBindFrame = other.morphToBindFrame;
         skinBoneNames = std::move(other.skinBoneNames);
         bindBoneFrames = std::move(other.bindBoneFrames);
+        morphToBindBoneFrames = std::move(other.morphToBindBoneFrames);
         skinWeights = std::move(other.skinWeights);
     }
     return *this;
@@ -765,7 +984,23 @@ bool Mesh::Load(const char* nifPath)
             continue;
         }
 
-        const std::vector<nifly::Vector3>* positions = file.GetVertsForShape(shape);
+        std::vector<nifly::Vector3> dynamicPositions;
+        const std::vector<nifly::Vector3>* positions = nullptr;
+        nifly::BSDynamicTriShape* dynamicShape =
+            dynamic_cast<nifly::BSDynamicTriShape*>(shape);
+        if (dynamicShape && !dynamicShape->dynamicData.empty()) {
+            dynamicPositions.reserve(dynamicShape->dynamicData.size());
+            for (const nifly::Vector4& dynamicPosition : dynamicShape->dynamicData) {
+                dynamicPositions.push_back({
+                    dynamicPosition.x,
+                    dynamicPosition.y,
+                    dynamicPosition.z
+                });
+            }
+            positions = &dynamicPositions;
+        } else {
+            positions = file.GetVertsForShape(shape);
+        }
         if (!positions || positions->empty()) {
             continue;
         }
@@ -803,6 +1038,9 @@ bool Mesh::Load(const char* nifPath)
             posedNormals);
 
         MeshPart part;
+        part.shapeName = Lowercase(shape->name.get());
+        part.faceGenPart = !faceTintPath.empty();
+        part.morphToBindFrame = CreateBoneFrame(inventoryRotation, transform);
         part.vertices.reserve(positions->size());
         for (std::size_t index = 0; index < positions->size(); ++index) {
             const nifly::Vector3 transformedPosition = hasSkinPose
@@ -844,7 +1082,9 @@ bool Mesh::Load(const char* nifPath)
         if (hasSkinPose) {
             for (std::uint32_t sourceBoneIndex = 0; sourceBoneIndex < boneNames.size(); ++sourceBoneIndex) {
                 nifly::MatTransform boneToGlobal;
-                if (!file.GetNodeTransformToGlobal(boneNames[sourceBoneIndex], boneToGlobal)) {
+                nifly::MatTransform skinToBone;
+                if (!file.GetNodeTransformToGlobal(boneNames[sourceBoneIndex], boneToGlobal) ||
+                    !file.GetShapeTransformSkinToBone(shape, sourceBoneIndex, skinToBone)) {
                     continue;
                 }
 
@@ -857,6 +1097,9 @@ bool Mesh::Load(const char* nifPath)
                     static_cast<std::uint16_t>(part.skinBoneNames.size());
                 part.skinBoneNames.push_back(boneNames[sourceBoneIndex]);
                 part.bindBoneFrames.push_back(CreateBoneFrame(inventoryRotation, boneToGlobal));
+                const nifly::MatTransform skinToGlobal = boneToGlobal.ComposeTransforms(skinToBone);
+                part.morphToBindBoneFrames.push_back(
+                    CreateBoneFrame(inventoryRotation, skinToGlobal));
                 for (const auto& [vertexIndex, weight] : weights) {
                     if (vertexIndex >= part.vertices.size() || weight <= 0.0f) {
                         continue;
@@ -946,6 +1189,9 @@ bool Mesh::Load(const char* nifPath)
                     lightingShader->IsSkinTinted() ||
                     (lightingShader->shaderFlags1 & nifly::SLSF1_FACEGEN_RGB_TINT) != 0;
                 part.faceOrSkin = faceOrSkinTinted;
+                part.faceGenPart = part.faceGenPart ||
+                                   lightingShader->IsFaceTinted() ||
+                                   (lightingShader->shaderFlags1 & nifly::SLSF1_FACEGEN_RGB_TINT) != 0;
                 if (faceOrSkinTinted) {
                     // Creation Engine specular strength is not a direct match for
                     // this renderer. Keep skin highlights present but subdued.
@@ -1096,6 +1342,18 @@ bool Mesh::Load(const char* nifPath)
             part.environmentEnabled = part.environmentEnabled ||
                                       !part.texturePaths[TextureSlotIndex(MeshTextureSlot::Environment)].empty();
         }
+        if (part.faceGenPart) {
+            part.morphSourcePositions.reserve(positions->size());
+            for (const nifly::Vector3& sourcePosition : *positions) {
+                part.morphSourcePositions.push_back({
+                    sourcePosition.x,
+                    sourcePosition.y,
+                    sourcePosition.z
+                });
+            }
+        } else {
+            part.morphToBindBoneFrames.clear();
+        }
         totalVertexCount += part.vertices.size();
         totalTriangleCount += part.indices.size() / 3;
         parts.push_back(std::move(part));
@@ -1134,6 +1392,12 @@ bool Mesh::Load(const char* nifPath)
         }
         if (!part.skinWeights.empty()) {
             part.bindVertices = part.vertices;
+        }
+        if (part.faceGenPart) {
+            part.morphBaseVertices = part.vertices;
+            if (part.bindVertices.empty()) {
+                part.bindVertices = part.vertices;
+            }
         }
     }
     return true;
@@ -1243,6 +1507,38 @@ Mesh::Mesh(
                         bodyAlignmentFrame,
                         true);
                 }
+                part.morphToBindFrame.axisX = TransformBetweenBoneFrames(
+                    part.morphToBindFrame.axisX,
+                    componentAlignmentFrame,
+                    bodyAlignmentFrame,
+                    true);
+                part.morphToBindFrame.axisY = TransformBetweenBoneFrames(
+                    part.morphToBindFrame.axisY,
+                    componentAlignmentFrame,
+                    bodyAlignmentFrame,
+                    true);
+                part.morphToBindFrame.axisZ = TransformBetweenBoneFrames(
+                    part.morphToBindFrame.axisZ,
+                    componentAlignmentFrame,
+                    bodyAlignmentFrame,
+                    true);
+                for (MeshBoneFrame& morphFrame : part.morphToBindBoneFrames) {
+                    morphFrame.axisX = TransformBetweenBoneFrames(
+                        morphFrame.axisX,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true);
+                    morphFrame.axisY = TransformBetweenBoneFrames(
+                        morphFrame.axisY,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true);
+                    morphFrame.axisZ = TransformBetweenBoneFrames(
+                        morphFrame.axisZ,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true);
+                }
             }
             for (MeshVertex& vertex : part.vertices) {
                 RE::NiPoint3 position{
@@ -1345,6 +1641,12 @@ Mesh::Mesh(
         }
         if (!part.skinWeights.empty()) {
             part.bindVertices = part.vertices;
+        }
+        if (part.faceGenPart) {
+            part.morphBaseVertices = part.vertices;
+            if (part.bindVertices.empty()) {
+                part.bindVertices = part.vertices;
+            }
         }
     }
 
@@ -1533,25 +1835,250 @@ bool Mesh::PlayAnimation(const char* animationPath, const char* skeletonPath, bo
     return true;
 }
 
+bool Mesh::ApplyMorphDeltas(
+    MeshPart& part,
+    const std::vector<RE::NiPoint3>& sourceDeltas)
+{
+    if (!mesh ||
+        part.morphBaseVertices.empty() ||
+        part.morphBaseVertices.size() != part.vertices.size() ||
+        sourceDeltas.size() != part.morphBaseVertices.size()) {
+        return false;
+    }
+
+    part.bindVertices = part.morphBaseVertices;
+    if (!part.skinWeights.empty() &&
+        part.morphToBindBoneFrames.size() == part.skinBoneNames.size()) {
+        std::vector<RE::NiPoint3> deltaSums(part.vertices.size());
+        std::vector<float> weightSums(part.vertices.size(), 0.0f);
+        for (const MeshSkinWeight& skinWeight : part.skinWeights) {
+            if (skinWeight.vertexIndex >= sourceDeltas.size() ||
+                skinWeight.boneIndex >= part.morphToBindBoneFrames.size() ||
+                skinWeight.weight <= 0.0f) {
+                continue;
+            }
+            const RE::NiPoint3 transformedDelta = ApplyBoneFrame(
+                part.morphToBindBoneFrames[skinWeight.boneIndex],
+                sourceDeltas[skinWeight.vertexIndex],
+                true);
+            deltaSums[skinWeight.vertexIndex] += transformedDelta * skinWeight.weight;
+            weightSums[skinWeight.vertexIndex] += skinWeight.weight;
+        }
+        for (std::size_t vertexIndex = 0; vertexIndex < part.bindVertices.size(); ++vertexIndex) {
+            const float weight = weightSums[vertexIndex];
+            if (weight <= 0.00001f) {
+                continue;
+            }
+            const RE::NiPoint3 delta = deltaSums[vertexIndex] / weight;
+            MeshVertex& vertex = part.bindVertices[vertexIndex];
+            vertex.position[0] += delta.x;
+            vertex.position[1] += delta.y;
+            vertex.position[2] += delta.z;
+        }
+    } else {
+        for (std::size_t vertexIndex = 0; vertexIndex < part.bindVertices.size(); ++vertexIndex) {
+            const RE::NiPoint3 delta = ApplyBoneFrame(
+                part.morphToBindFrame,
+                sourceDeltas[vertexIndex],
+                true);
+            MeshVertex& vertex = part.bindVertices[vertexIndex];
+            vertex.position[0] += delta.x;
+            vertex.position[1] += delta.y;
+            vertex.position[2] += delta.z;
+        }
+    }
+
+    part.vertices = part.bindVertices;
+    RE::NiPoint3 minimum{
+        part.vertices.front().position[0],
+        part.vertices.front().position[1],
+        part.vertices.front().position[2]
+    };
+    RE::NiPoint3 maximum = minimum;
+    for (const MeshVertex& vertex : part.vertices) {
+        minimum.x = std::min(minimum.x, vertex.position[0]);
+        minimum.y = std::min(minimum.y, vertex.position[1]);
+        minimum.z = std::min(minimum.z, vertex.position[2]);
+        maximum.x = std::max(maximum.x, vertex.position[0]);
+        maximum.y = std::max(maximum.y, vertex.position[1]);
+        maximum.z = std::max(maximum.z, vertex.position[2]);
+    }
+    part.center = (minimum + maximum) * 0.5f;
+    part.vertexBufferDirty = true;
+    mesh->mustUpdate = true;
+    return true;
+}
+
+bool Mesh::SetMorph(const char* triPath, const char* morphName, float value)
+{
+    if (!mesh || !triPath || !triPath[0] || !morphName || !morphName[0] || !std::isfinite(value)) {
+        return false;
+    }
+
+    TriMorph morph;
+    if (!ReadTriMorph(triPath, morphName, morph)) {
+        return false;
+    }
+
+    MeshPart* matchingPart = nullptr;
+    double bestError = std::numeric_limits<double>::max();
+    for (MeshPart& part : parts) {
+        if (!part.faceGenPart ||
+            part.morphSourcePositions.size() != morph.basePositions.size() ||
+            part.morphBaseVertices.size() != morph.deltas.size()) {
+            continue;
+        }
+
+        double error = 0.0;
+        for (std::size_t vertexIndex = 0; vertexIndex < morph.basePositions.size(); ++vertexIndex) {
+            const RE::NiPoint3 difference =
+                part.morphSourcePositions[vertexIndex] - morph.basePositions[vertexIndex];
+            error += static_cast<double>(difference.x) * difference.x;
+            error += static_cast<double>(difference.y) * difference.y;
+            error += static_cast<double>(difference.z) * difference.z;
+        }
+        if (error < bestError) {
+            bestError = error;
+            matchingPart = &part;
+        }
+    }
+    if (!matchingPart) {
+        logger::warn("Could not match TRI morph {} from {} to a FaceGen mesh part", morphName, triPath);
+        return false;
+    }
+
+    const float morphValue = std::clamp(value, 0.0f, 1.0f);
+    for (RE::NiPoint3& delta : morph.deltas) {
+        delta *= morphValue;
+    }
+    faceMorphActor.reset();
+    const bool applied = ApplyMorphDeltas(*matchingPart, morph.deltas);
+    if (applied) {
+        logger::info("Applied TRI morph {} from {} to {}", morphName, triPath, matchingPart->shapeName);
+    }
+    return applied;
+}
+
+bool Mesh::ClearFaceMorphs()
+{
+    if (!mesh) {
+        return false;
+    }
+
+    faceMorphActor.reset();
+    bool cleared = false;
+    for (MeshPart& part : parts) {
+        if (!part.faceGenPart || part.morphBaseVertices.size() != part.vertices.size()) {
+            continue;
+        }
+        const std::vector<RE::NiPoint3> zeroDeltas(part.morphBaseVertices.size());
+        cleared = ApplyMorphDeltas(part, zeroDeltas) || cleared;
+    }
+    return cleared;
+}
+
+bool Mesh::SetFaceMorphSource(RE::Actor* actor)
+{
+    if (!mesh || !actor) {
+        return false;
+    }
+
+    faceMorphActor = actor->GetHandle();
+    mesh->alwaysUpdate = true;
+    mesh->mustUpdate = true;
+    UpdateFaceMorphs();
+    return true;
+}
+
+bool Mesh::UpdateFaceMorphs()
+{
+    if (!faceMorphActor) {
+        return false;
+    }
+
+    RE::NiPointer<RE::Actor> actor = faceMorphActor.get();
+    if (!actor) {
+        return false;
+    }
+    RE::BSFaceGenNiNode* faceNode = actor->GetFaceNodeSkinned();
+    if (!faceNode) {
+        return false;
+    }
+
+    std::vector<LiveFaceShape> liveShapes;
+    CollectLiveFaceShapes(faceNode, liveShapes);
+    if (liveShapes.empty()) {
+        return false;
+    }
+
+    bool updated = false;
+    for (MeshPart& part : parts) {
+        if (!part.faceGenPart ||
+            part.morphBaseVertices.size() != part.vertices.size() ||
+            part.morphSourcePositions.size() != part.vertices.size()) {
+            continue;
+        }
+
+        LiveFaceShape* matchingShape = nullptr;
+        for (LiveFaceShape& liveShape : liveShapes) {
+            if (!liveShape.used &&
+                liveShape.positions.size() == part.morphSourcePositions.size() &&
+                liveShape.name == part.shapeName) {
+                matchingShape = &liveShape;
+                break;
+            }
+        }
+        if (!matchingShape) {
+            LiveFaceShape* countMatch = nullptr;
+            for (LiveFaceShape& liveShape : liveShapes) {
+                if (liveShape.used ||
+                    liveShape.positions.size() != part.morphSourcePositions.size()) {
+                    continue;
+                }
+                if (countMatch) {
+                    countMatch = nullptr;
+                    break;
+                }
+                countMatch = &liveShape;
+            }
+            matchingShape = countMatch;
+        }
+        if (!matchingShape) {
+            continue;
+        }
+        matchingShape->used = true;
+
+        std::vector<RE::NiPoint3> sourceDeltas(part.vertices.size());
+        for (std::size_t vertexIndex = 0; vertexIndex < sourceDeltas.size(); ++vertexIndex) {
+            sourceDeltas[vertexIndex] =
+                matchingShape->positions[vertexIndex] - part.morphSourcePositions[vertexIndex];
+        }
+
+        updated = ApplyMorphDeltas(part, sourceDeltas) || updated;
+    }
+    return updated;
+}
+
 bool Mesh::UpdateAnimation()
 {
+    bool updated = UpdateFaceMorphs();
     if (!animation) {
-        return false;
+        return updated;
     }
     std::vector<MeshRenderingFrameworkAPI::BoneTransform> pose;
     if (!animation->Sample(pose) || pose.empty()) {
-        return false;
+        return updated;
     }
     const std::vector<const char*>& names = animation->GetBoneNames();
     const std::vector<std::int16_t>& parents = animation->GetParentIndices();
     if (names.size() != pose.size() || parents.size() != pose.size()) {
-        return false;
+        return updated;
     }
     return SetBoneLocalPose(
         names.data(),
         parents.data(),
         pose.data(),
-        static_cast<std::uint32_t>(pose.size()));
+        static_cast<std::uint32_t>(pose.size())) || updated;
 }
 
 bool Mesh::InitializeGpuResources(ID3D11Device* device)
@@ -1564,7 +2091,7 @@ bool Mesh::InitializeGpuResources(ID3D11Device* device)
         if (!part.vertexBuffer) {
             D3D11_BUFFER_DESC vertexDescription{};
             vertexDescription.ByteWidth = static_cast<UINT>(part.vertices.size() * sizeof(MeshVertex));
-            const bool animated = !part.skinWeights.empty();
+            const bool animated = !part.skinWeights.empty() || !part.morphBaseVertices.empty();
             vertexDescription.Usage = animated ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_IMMUTABLE;
             vertexDescription.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             vertexDescription.CPUAccessFlags = animated ? D3D11_CPU_ACCESS_WRITE : 0;

@@ -451,6 +451,55 @@ bool RenderManager::PlayAnimation(
     return meshEntry->second->PlayAnimation(animationPath, skeletonPath, loop);
 }
 
+bool RenderManager::SetFaceMorphSource(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    RE::Actor* actor)
+{
+    if (!mesh || !actor) {
+        return false;
+    }
+
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshEntry = meshes.find(mesh);
+    if (meshEntry == meshes.end() || !meshEntry->second) {
+        return false;
+    }
+    return meshEntry->second->SetFaceMorphSource(actor);
+}
+
+bool RenderManager::SetMorph(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* triPath,
+    const char* morphName,
+    float value)
+{
+    if (!mesh || !triPath || !morphName) {
+        return false;
+    }
+
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshEntry = meshes.find(mesh);
+    if (meshEntry == meshes.end() || !meshEntry->second) {
+        return false;
+    }
+    return meshEntry->second->SetMorph(triPath, morphName, value);
+}
+
+bool RenderManager::ClearFaceMorphs(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh)
+{
+    if (!mesh) {
+        return false;
+    }
+
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshEntry = meshes.find(mesh);
+    if (meshEntry == meshes.end() || !meshEntry->second) {
+        return false;
+    }
+    return meshEntry->second->ClearFaceMorphs();
+}
+
 bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* target)
 {
     if (!sourceMesh || !sourceMesh->mesh || !target || !target->texture || !device || !renderContext) {

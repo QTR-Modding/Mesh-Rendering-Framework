@@ -111,6 +111,28 @@ namespace MeshRenderingFrameworkAPI {
             return function && function(mesh, animationPath, skeletonPath, loop);
         }
 
+        inline bool __stdcall IMesh_SetFaceMorphSource(IMesh* mesh, RE::Actor* actor)
+        {
+            auto function = GetFunction<decltype(&IMesh_SetFaceMorphSource)>("IMesh_SetFaceMorphSource");
+            return function && function(mesh, actor);
+        }
+
+        inline bool __stdcall IMesh_SetMorph(
+            IMesh* mesh,
+            const char* triPath,
+            const char* morphName,
+            float value)
+        {
+            auto function = GetFunction<decltype(&IMesh_SetMorph)>("IMesh_SetMorph");
+            return function && function(mesh, triPath, morphName, value);
+        }
+
+        inline bool __stdcall IMesh_ClearFaceMorphs(IMesh* mesh)
+        {
+            auto function = GetFunction<decltype(&IMesh_ClearFaceMorphs)>("IMesh_ClearFaceMorphs");
+            return function && function(mesh);
+        }
+
         inline void __stdcall IMesh_Delete(IMesh* mesh) {
             auto function = GetFunction<decltype(&IMesh_Delete)>("IMesh_Delete");
             if (!function) {
@@ -241,6 +263,18 @@ namespace MeshRenderingFrameworkAPI {
             return stream.good() && stream.stream && stream.stream->totalSize > 0;
         }
 
+        inline void AttachNpcFaceMorphSource(IMesh* mesh, RE::TESNPC* npc)
+        {
+            if (!mesh || !npc) {
+                return;
+            }
+
+            RE::Actor* actor = npc->GetUniqueActor();
+            if (actor) {
+                IMesh_SetFaceMorphSource(mesh, actor);
+            }
+        }
+
         inline IMesh* CreateWholeNpc(
             RE::TESNPC* npc,
             uint32_t width,
@@ -335,10 +369,14 @@ namespace MeshRenderingFrameworkAPI {
                 mesh->useBodyTint = true;
                 mesh->mustUpdate = true;
             }
+            AttachNpcFaceMorphSource(mesh, npc);
             return mesh;
         }
 
         inline IMesh* CreateFromBaseObject(RE::TESBoundObject* base, uint32_t width, uint32_t  height) {
+            if (!base) {
+                return nullptr;
+            }
             if (auto weapon = base->As<RE::TESObjectWEAP>()) {
                 if (auto first = weapon->firstPersonModelObject) {
                     return IMesh_CreateByNifPath(first->GetModel(), width, height);
@@ -385,6 +423,7 @@ namespace MeshRenderingFrameworkAPI {
                             static_cast<uint32_t>(attachmentPaths.size()),
                             width,
                             height)) {
+                        AttachNpcFaceMorphSource(mesh, npc);
                         return mesh;
                     }
                 }
@@ -564,6 +603,96 @@ namespace MeshRenderingFrameworkAPI {
                 return false;
             }
             return Internal::IMesh_PlayAnimation(mesh, animationPath, skeletonPath, loop);
+        }
+        bool SetFaceMorphSource(RE::Actor* actor)
+        {
+            if (!mesh || !actor) {
+                return false;
+            }
+            return Internal::IMesh_SetFaceMorphSource(mesh, actor);
+        }
+        bool SetMorph(const char* triPath, const char* morphName, float value = 1.0f)
+        {
+            if (!mesh || !triPath || !morphName) {
+                return false;
+            }
+            return Internal::IMesh_SetMorph(mesh, triPath, morphName, value);
+        }
+        bool ClearFaceMorphs()
+        {
+            return mesh && Internal::IMesh_ClearFaceMorphs(mesh);
+        }
+        bool SetExpression(
+            RE::BSFaceGenKeyframeMultiple::Expression expression,
+            float value = 1.0f)
+        {
+            if (!mesh || !base) {
+                return false;
+            }
+
+            RE::TESNPC* npc = base->As<RE::TESNPC>();
+            if (!npc) {
+                return false;
+            }
+
+            const bool cleared = ClearFaceMorphs();
+            if (expression == RE::BSFaceGenKeyframeMultiple::MoodNeutral) {
+                return cleared;
+            }
+
+            const char* expressionName =
+                RE::BSFaceGenKeyframeMultiple::GetExpressionName(
+                    static_cast<std::uint32_t>(expression));
+            if (!expressionName || !expressionName[0]) {
+                return false;
+            }
+
+            RE::TESNPC* faceNpc = npc->GetRootFaceNPC();
+            if (!faceNpc) {
+                faceNpc = npc;
+            }
+
+            std::vector<RE::BGSHeadPart*> pending;
+            std::vector<RE::BGSHeadPart*> processed;
+            pending.reserve(faceNpc->numHeadParts + npc->numHeadParts);
+            RE::TESNPC* faceSources[2]{faceNpc, npc};
+            for (RE::TESNPC* faceSource : faceSources) {
+                if (!faceSource || !faceSource->headParts || faceSource->numHeadParts <= 0) {
+                    continue;
+                }
+                for (std::int8_t headPartIndex = 0;
+                     headPartIndex < faceSource->numHeadParts;
+                     ++headPartIndex) {
+                    if (faceSource->headParts[headPartIndex]) {
+                        pending.push_back(faceSource->headParts[headPartIndex]);
+                    }
+                }
+            }
+
+            bool applied = false;
+            while (!pending.empty()) {
+                RE::BGSHeadPart* headPart = pending.back();
+                pending.pop_back();
+                if (!headPart ||
+                    std::find(processed.begin(), processed.end(), headPart) != processed.end()) {
+                    continue;
+                }
+                processed.push_back(headPart);
+
+                const char* triPath = headPart
+                    ->morphs[RE::BGSHeadPart::MorphIndices::kDefaultMorph]
+                    .GetModel();
+                if (triPath && triPath[0]) {
+                    applied = SetMorph(triPath, expressionName, value) || applied;
+                }
+
+                for (RE::BGSHeadPart* extraPart : headPart->extraParts) {
+                    if (extraPart) {
+                        pending.push_back(extraPart);
+                    }
+                }
+            }
+            return applied;
         }
         ~Mesh() {
             if (mesh) {
