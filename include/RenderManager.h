@@ -36,11 +36,15 @@ class RenderManager {
     static inline ID3D11Query* completionQuery;
     static inline ID3D11VertexShader* vertexShader = nullptr;
     static inline ID3D11PixelShader* pixelShader = nullptr;
+    static inline ID3D11VertexShader* shadowVertexShader = nullptr;
+    static inline ID3D11PixelShader* shadowPixelShader = nullptr;
     static inline ID3D11InputLayout* inputLayout = nullptr;
     static inline ID3D11Buffer* constantBuffer = nullptr;
     static inline ID3D11Buffer* materialConstantBuffer = nullptr;
     static inline ID3D11SamplerState* samplerState = nullptr;
+    static inline ID3D11SamplerState* shadowSamplerState = nullptr;
     static inline ID3D11RasterizerState* rasterizerState = nullptr;
+    static inline ID3D11RasterizerState* shadowRasterizerState = nullptr;
     static inline ID3D11BlendState* opaqueBlendState = nullptr;
     static inline ID3D11BlendState* alphaBlendState = nullptr;
     static inline ID3D11DepthStencilState* depthWriteState = nullptr;
@@ -49,6 +53,9 @@ class RenderManager {
     static inline ID3D11ShaderResourceView* fallbackNormalTexture = nullptr;
     static inline ID3D11ShaderResourceView* fallbackBlackTexture = nullptr;
     static inline ID3D11ShaderResourceView* fallbackEnvironmentTexture = nullptr;
+    static inline ID3D11Texture2D* shadowTexture = nullptr;
+    static inline ID3D11ShaderResourceView* shadowTextureView = nullptr;
+    static inline std::array<ID3D11DepthStencilView*, 3> shadowDepthViews{};
 
     static bool InitializePipeline();
     static void ReleasePipeline();

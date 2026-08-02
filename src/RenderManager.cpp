@@ -6,6 +6,7 @@
 #include <d3dcompiler.h>
 #include <wincodec.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -43,7 +44,14 @@ namespace
         DirectX::XMFLOAT4 lightDirections[3];
         DirectX::XMFLOAT4 lightColors[3];
         DirectX::XMFLOAT4 ambientColor;
+        DirectX::XMFLOAT4X4 lightViewProjections[3];
+        DirectX::XMFLOAT4 shadowParameters;
     };
+
+    static_assert(sizeof(SceneConstants) == 464);
+
+    constexpr UINT shadowMapResolution = 1024;
+    constexpr std::size_t shadowLightCount = 3;
 
     constexpr const char* vertexShaderSource = R"(
         cbuffer SceneConstants : register(b0)
@@ -96,7 +104,9 @@ namespace
         Texture2D backlightTexture : register(t7);
         Texture2D specularTexture : register(t8);
         Texture2D faceTintTexture : register(t9);
+        Texture2DArray<float> shadowTexture : register(t10);
         SamplerState materialSampler : register(s0);
+        SamplerComparisonState shadowSampler : register(s1);
 
         cbuffer SceneConstants : register(b0)
         {
@@ -106,6 +116,8 @@ namespace
             float4 lightDirections[3];
             float4 lightColors[3];
             float4 ambientColor;
+            row_major float4x4 lightViewProjections[3];
+            float4 shadowParameters;
         };
 
         cbuffer MaterialConstants : register(b1)
@@ -162,6 +174,7 @@ namespace
         float3 EvaluateLight(
             float3 normal,
             float3 viewDirection,
+            float3 worldPosition,
             float3 albedo,
             float specularMask,
             uint lightIndex)
@@ -181,7 +194,34 @@ namespace
             }
             float3 diffuseLight = albedo * diffuseAmount;
             float3 specularLight = specularColor * specularStrength * specularMask * specularAmount;
-            return (diffuseLight + specularLight) * lightColors[lightIndex].rgb;
+
+            float4 shadowPosition = mul(float4(worldPosition, 1.0f), lightViewProjections[lightIndex]);
+            float3 shadowProjection = shadowPosition.xyz / shadowPosition.w;
+            float2 shadowUv = float2(
+                shadowProjection.x * 0.5f + 0.5f,
+                -shadowProjection.y * 0.5f + 0.5f);
+            float shadowAmount = 1.0f;
+            if (shadowProjection.z >= 0.0f && shadowProjection.z <= 1.0f &&
+                all(shadowUv >= 0.0f) && all(shadowUv <= 1.0f)) {
+                float comparisonDepth = shadowProjection.z -
+                    shadowParameters.z -
+                    shadowParameters.w * (1.0f - diffuseAmount);
+                shadowAmount = 0.0f;
+                [unroll]
+                for (int shadowY = -1; shadowY <= 1; ++shadowY) {
+                    [unroll]
+                    for (int shadowX = -1; shadowX <= 1; ++shadowX) {
+                        float2 shadowOffset = float2(shadowX, shadowY) *
+                            shadowParameters.x * shadowParameters.y;
+                        shadowAmount += shadowTexture.SampleCmpLevelZero(
+                            shadowSampler,
+                            float3(shadowUv + shadowOffset, lightIndex),
+                            comparisonDepth);
+                    }
+                }
+                shadowAmount /= 9.0f;
+            }
+            return (diffuseLight + specularLight) * lightColors[lightIndex].rgb * shadowAmount;
         }
 
         float4 main(PixelInput input, bool frontFacing : SV_IsFrontFace) : SV_TARGET
@@ -250,9 +290,9 @@ namespace
             specularMask *= specularEnabled;
 
             float3 color = albedo * ambientColor.rgb;
-            color += EvaluateLight(normal, viewDirection, albedo, specularMask, 0);
-            color += EvaluateLight(normal, viewDirection, albedo, specularMask, 1);
-            color += EvaluateLight(normal, viewDirection, albedo, specularMask, 2);
+            color += EvaluateLight(normal, viewDirection, input.worldPosition, albedo, specularMask, 0);
+            color += EvaluateLight(normal, viewDirection, input.worldPosition, albedo, specularMask, 1);
+            color += EvaluateLight(normal, viewDirection, input.worldPosition, albedo, specularMask, 2);
 
             float backFacingLight = saturate(dot(-normal, normalize(lightDirections[0].xyz)));
             if (hasSubsurfaceMap > 0.5f && auxiliaryMapMode < 3.5f) {
@@ -298,6 +338,93 @@ namespace
             float displaySaturation = faceOrSkin > 0.5f ? 0.5f : 0.5f;
             displayColor = lerp(displayLuminance.xxx, displayColor, displaySaturation);
             return float4(displayColor, outputAlpha);
+        }
+    )";
+
+    constexpr const char* shadowVertexShaderSource = R"(
+        cbuffer SceneConstants : register(b0)
+        {
+            row_major float4x4 worldViewProjection;
+        };
+
+        struct VertexInput
+        {
+            float3 position : POSITION;
+            float3 normal : NORMAL;
+            float4 tangent : TANGENT;
+            float2 uv : TEXCOORD0;
+            float4 color : COLOR0;
+        };
+
+        struct PixelInput
+        {
+            float4 position : SV_POSITION;
+            float2 uv : TEXCOORD0;
+            float4 color : COLOR0;
+        };
+
+        PixelInput main(VertexInput input)
+        {
+            PixelInput output;
+            output.position = mul(float4(input.position, 1.0f), worldViewProjection);
+            output.uv = input.uv;
+            output.color = input.color;
+            return output;
+        }
+    )";
+
+    constexpr const char* shadowPixelShaderSource = R"(
+        Texture2D diffuseTexture : register(t0);
+        SamplerState materialSampler : register(s0);
+
+        cbuffer MaterialConstants : register(b1)
+        {
+            float alphaThreshold;
+            float materialAlpha;
+            float blendEnabled;
+            float specularStrength;
+            float3 specularColor;
+            float glossiness;
+            float3 emissiveColor;
+            float emissiveMultiple;
+            float3 tintColor;
+            float environmentScale;
+            float2 uvScale;
+            float2 uvOffset;
+            float parallaxScale;
+            float backlightPower;
+            float rimlightPower;
+            float auxiliaryMapMode;
+            float hasNormalMap;
+            float hasHeightMap;
+            float hasEnvironmentMap;
+            float hasEnvironmentMask;
+            float hasSubsurfaceMap;
+            float hasBacklightMap;
+            float hasSpecularMap;
+            float modelSpaceNormals;
+            float useVertexColors;
+            float useVertexAlpha;
+            float emissiveEnabled;
+            float specularEnabled;
+        };
+
+        struct PixelInput
+        {
+            float4 position : SV_POSITION;
+            float2 uv : TEXCOORD0;
+            float4 color : COLOR0;
+        };
+
+        void main(PixelInput input)
+        {
+            float2 uv = input.uv * uvScale + uvOffset;
+            float vertexAlpha = lerp(1.0f, input.color.a, useVertexAlpha);
+            float alpha = diffuseTexture.Sample(materialSampler, uv).a * vertexAlpha * materialAlpha;
+            float shadowAlphaThreshold = alphaThreshold >= 0.0f
+                ? alphaThreshold
+                : (blendEnabled > 0.5f ? 0.1f : -1.0f);
+            clip(alpha - shadowAlphaThreshold);
         }
     )";
 
@@ -590,10 +717,12 @@ bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* targe
 
 bool RenderManager::InitializePipeline()
 {
-    if (vertexShader && pixelShader && inputLayout && constantBuffer && samplerState &&
-        materialConstantBuffer && rasterizerState && opaqueBlendState && alphaBlendState &&
+    if (vertexShader && pixelShader && shadowVertexShader && shadowPixelShader && inputLayout &&
+        constantBuffer && samplerState && shadowSamplerState && materialConstantBuffer &&
+        rasterizerState && shadowRasterizerState && opaqueBlendState && alphaBlendState &&
         depthWriteState && depthReadState && fallbackWhiteTexture && fallbackNormalTexture &&
-        fallbackBlackTexture && fallbackEnvironmentTexture) {
+        fallbackBlackTexture && fallbackEnvironmentTexture && shadowTexture && shadowTextureView &&
+        shadowDepthViews[0] && shadowDepthViews[1] && shadowDepthViews[2]) {
         return true;
     }
     if (!device) {
@@ -603,10 +732,16 @@ bool RenderManager::InitializePipeline()
     ReleasePipeline();
     ID3DBlob* vertexByteCode = nullptr;
     ID3DBlob* pixelByteCode = nullptr;
+    ID3DBlob* shadowVertexByteCode = nullptr;
+    ID3DBlob* shadowPixelByteCode = nullptr;
     if (!CompileShader(vertexShaderSource, "vs_5_0", &vertexByteCode) ||
-        !CompileShader(pixelShaderSource, "ps_5_0", &pixelByteCode)) {
+        !CompileShader(pixelShaderSource, "ps_5_0", &pixelByteCode) ||
+        !CompileShader(shadowVertexShaderSource, "vs_5_0", &shadowVertexByteCode) ||
+        !CompileShader(shadowPixelShaderSource, "ps_5_0", &shadowPixelByteCode)) {
         ReleaseResource(vertexByteCode);
         ReleaseResource(pixelByteCode);
+        ReleaseResource(shadowVertexByteCode);
+        ReleaseResource(shadowPixelByteCode);
         return false;
     }
 
@@ -615,6 +750,20 @@ bool RenderManager::InitializePipeline()
     if (SUCCEEDED(result)) {
         result = device->CreatePixelShader(
             pixelByteCode->GetBufferPointer(), pixelByteCode->GetBufferSize(), nullptr, &pixelShader);
+    }
+    if (SUCCEEDED(result)) {
+        result = device->CreateVertexShader(
+            shadowVertexByteCode->GetBufferPointer(),
+            shadowVertexByteCode->GetBufferSize(),
+            nullptr,
+            &shadowVertexShader);
+    }
+    if (SUCCEEDED(result)) {
+        result = device->CreatePixelShader(
+            shadowPixelByteCode->GetBufferPointer(),
+            shadowPixelByteCode->GetBufferSize(),
+            nullptr,
+            &shadowPixelShader);
     }
 
     const D3D11_INPUT_ELEMENT_DESC elements[] = {
@@ -634,6 +783,8 @@ bool RenderManager::InitializePipeline()
     }
     ReleaseResource(vertexByteCode);
     ReleaseResource(pixelByteCode);
+    ReleaseResource(shadowVertexByteCode);
+    ReleaseResource(shadowPixelByteCode);
 
     D3D11_BUFFER_DESC constantDescription{};
     constantDescription.ByteWidth = sizeof(SceneConstants);
@@ -663,6 +814,21 @@ bool RenderManager::InitializePipeline()
         result = device->CreateSamplerState(&samplerDescription, &samplerState);
     }
 
+    D3D11_SAMPLER_DESC shadowSamplerDescription{};
+    shadowSamplerDescription.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    shadowSamplerDescription.AddressU = D3D11_TEXTURE_ADDRESS_BORDER;
+    shadowSamplerDescription.AddressV = D3D11_TEXTURE_ADDRESS_BORDER;
+    shadowSamplerDescription.AddressW = D3D11_TEXTURE_ADDRESS_BORDER;
+    shadowSamplerDescription.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
+    shadowSamplerDescription.BorderColor[0] = 1.0f;
+    shadowSamplerDescription.BorderColor[1] = 1.0f;
+    shadowSamplerDescription.BorderColor[2] = 1.0f;
+    shadowSamplerDescription.BorderColor[3] = 1.0f;
+    shadowSamplerDescription.MaxLOD = D3D11_FLOAT32_MAX;
+    if (SUCCEEDED(result)) {
+        result = device->CreateSamplerState(&shadowSamplerDescription, &shadowSamplerState);
+    }
+
     D3D11_RASTERIZER_DESC rasterizerDescription{};
     rasterizerDescription.FillMode = D3D11_FILL_SOLID;
     rasterizerDescription.CullMode = D3D11_CULL_NONE;
@@ -670,6 +836,15 @@ bool RenderManager::InitializePipeline()
     rasterizerDescription.ScissorEnable = TRUE;
     if (SUCCEEDED(result)) {
         result = device->CreateRasterizerState(&rasterizerDescription, &rasterizerState);
+    }
+
+    D3D11_RASTERIZER_DESC shadowRasterizerDescription = rasterizerDescription;
+    shadowRasterizerDescription.ScissorEnable = FALSE;
+    shadowRasterizerDescription.DepthBias = 100;
+    shadowRasterizerDescription.SlopeScaledDepthBias = 1.0f;
+    shadowRasterizerDescription.DepthBiasClamp = 0.01f;
+    if (SUCCEEDED(result)) {
+        result = device->CreateRasterizerState(&shadowRasterizerDescription, &shadowRasterizerState);
     }
 
     D3D11_BLEND_DESC opaqueBlendDescription{};
@@ -719,6 +894,46 @@ bool RenderManager::InitializePipeline()
         result = CreateSolidTexture(device, 0xFF000000, true, &fallbackEnvironmentTexture);
     }
 
+    D3D11_TEXTURE2D_DESC shadowTextureDescription{};
+    shadowTextureDescription.Width = shadowMapResolution;
+    shadowTextureDescription.Height = shadowMapResolution;
+    shadowTextureDescription.MipLevels = 1;
+    shadowTextureDescription.ArraySize = static_cast<UINT>(shadowLightCount);
+    shadowTextureDescription.Format = DXGI_FORMAT_R32_TYPELESS;
+    shadowTextureDescription.SampleDesc.Count = 1;
+    shadowTextureDescription.Usage = D3D11_USAGE_DEFAULT;
+    shadowTextureDescription.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    if (SUCCEEDED(result)) {
+        result = device->CreateTexture2D(&shadowTextureDescription, nullptr, &shadowTexture);
+    }
+
+    for (std::size_t lightIndex = 0; lightIndex < shadowLightCount && SUCCEEDED(result); ++lightIndex) {
+        D3D11_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
+        depthViewDescription.Format = DXGI_FORMAT_D32_FLOAT;
+        depthViewDescription.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        depthViewDescription.Texture2DArray.MipSlice = 0;
+        depthViewDescription.Texture2DArray.FirstArraySlice = static_cast<UINT>(lightIndex);
+        depthViewDescription.Texture2DArray.ArraySize = 1;
+        result = device->CreateDepthStencilView(
+            shadowTexture,
+            &depthViewDescription,
+            &shadowDepthViews[lightIndex]);
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC shadowResourceDescription{};
+    shadowResourceDescription.Format = DXGI_FORMAT_R32_FLOAT;
+    shadowResourceDescription.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+    shadowResourceDescription.Texture2DArray.MostDetailedMip = 0;
+    shadowResourceDescription.Texture2DArray.MipLevels = 1;
+    shadowResourceDescription.Texture2DArray.FirstArraySlice = 0;
+    shadowResourceDescription.Texture2DArray.ArraySize = static_cast<UINT>(shadowLightCount);
+    if (SUCCEEDED(result)) {
+        result = device->CreateShaderResourceView(
+            shadowTexture,
+            &shadowResourceDescription,
+            &shadowTextureView);
+    }
+
     if (FAILED(result)) {
         ReleasePipeline();
         return false;
@@ -728,6 +943,11 @@ bool RenderManager::InitializePipeline()
 
 void RenderManager::ReleasePipeline()
 {
+    ReleaseResource(shadowTextureView);
+    for (ID3D11DepthStencilView*& shadowDepthView : shadowDepthViews) {
+        ReleaseResource(shadowDepthView);
+    }
+    ReleaseResource(shadowTexture);
     ReleaseResource(fallbackEnvironmentTexture);
     ReleaseResource(fallbackBlackTexture);
     ReleaseResource(fallbackNormalTexture);
@@ -736,13 +956,17 @@ void RenderManager::ReleasePipeline()
     ReleaseResource(depthWriteState);
     ReleaseResource(alphaBlendState);
     ReleaseResource(opaqueBlendState);
+    ReleaseResource(shadowRasterizerState);
     ReleaseResource(rasterizerState);
+    ReleaseResource(shadowSamplerState);
     ReleaseResource(samplerState);
     ReleaseResource(materialConstantBuffer);
     ReleaseResource(constantBuffer);
     ReleaseResource(inputLayout);
     ReleaseResource(pixelShader);
     ReleaseResource(vertexShader);
+    ReleaseResource(shadowPixelShader);
+    ReleaseResource(shadowVertexShader);
 }
 
 bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
@@ -819,6 +1043,56 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
     constants.lightColors[1] = DirectX::XMFLOAT4(0.42f, 0.50f, 0.62f, 1.0f);
     constants.lightColors[2] = DirectX::XMFLOAT4(0.30f, 0.35f, 0.42f, 1.0f);
     constants.ambientColor = DirectX::XMFLOAT4(0.30f, 0.32f, 0.36f, 1.0f);
+    constants.shadowParameters = DirectX::XMFLOAT4(
+        1.0f / static_cast<float>(shadowMapResolution),
+        1.5f,
+        0.00035f,
+        0.0025f);
+
+    float localShadowRadiusSquared = 0.0f;
+    for (const MeshPart& part : sourceMesh->parts) {
+        for (const MeshVertex& vertex : part.vertices) {
+            const float vertexRadiusSquared =
+                vertex.position[0] * vertex.position[0] +
+                vertex.position[1] * vertex.position[1] +
+                vertex.position[2] * vertex.position[2];
+            localShadowRadiusSquared = std::max(localShadowRadiusSquared, vertexRadiusSquared);
+        }
+    }
+    const float shadowRadius = std::max(
+        std::sqrt(localShadowRadiusSquared) * std::abs(sourceMesh->mesh->scale) * 1.05f,
+        1.0f);
+    const DirectX::XMVECTOR shadowCenter = DirectX::XMVectorSet(
+        sourceMesh->mesh->position.x,
+        sourceMesh->mesh->position.y,
+        sourceMesh->mesh->position.z,
+        1.0f);
+    DirectX::XMMATRIX lightViewProjections[shadowLightCount];
+    for (std::size_t lightIndex = 0; lightIndex < shadowLightCount; ++lightIndex) {
+        const DirectX::XMVECTOR lightDirection = DirectX::XMVector3Normalize(
+            DirectX::XMLoadFloat4(&constants.lightDirections[lightIndex]));
+        const float upAlignment = std::abs(DirectX::XMVectorGetX(
+            DirectX::XMVector3Dot(lightDirection, DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f))));
+        const DirectX::XMVECTOR lightUp = upAlignment > 0.95f
+            ? DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f)
+            : DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+        const DirectX::XMVECTOR lightPosition = DirectX::XMVectorAdd(
+            shadowCenter,
+            DirectX::XMVectorScale(lightDirection, shadowRadius * 2.5f));
+        const DirectX::XMMATRIX lightView = DirectX::XMMatrixLookAtRH(
+            lightPosition,
+            shadowCenter,
+            lightUp);
+        const DirectX::XMMATRIX lightProjection = DirectX::XMMatrixOrthographicRH(
+            shadowRadius * 2.0f,
+            shadowRadius * 2.0f,
+            shadowRadius * 0.1f,
+            shadowRadius * 5.0f);
+        lightViewProjections[lightIndex] = lightView * lightProjection;
+        DirectX::XMStoreFloat4x4(
+            &constants.lightViewProjections[lightIndex],
+            lightViewProjections[lightIndex]);
+    }
 
     std::array<ID3D11ShaderResourceView*, MeshTextureSlotCount> fallbackTextures{
         fallbackWhiteTexture,
@@ -833,6 +1107,68 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
         fallbackWhiteTexture
     };
 
+    ID3D11ShaderResourceView* noShadowTexture = nullptr;
+    renderContext->PSSetShaderResources(10, 1, &noShadowTexture);
+    renderContext->OMSetBlendState(opaqueBlendState, nullptr, 0xFFFFFFFF);
+    renderContext->OMSetDepthStencilState(depthWriteState, 0);
+    renderContext->RSSetState(shadowRasterizerState);
+    const D3D11_VIEWPORT shadowViewport{
+        0.0f,
+        0.0f,
+        static_cast<float>(shadowMapResolution),
+        static_cast<float>(shadowMapResolution),
+        0.0f,
+        1.0f
+    };
+    renderContext->RSSetViewports(1, &shadowViewport);
+    renderContext->VSSetShader(shadowVertexShader, nullptr, 0);
+    renderContext->PSSetShader(shadowPixelShader, nullptr, 0);
+
+    bool shadowsRendered = true;
+    for (std::size_t lightIndex = 0; lightIndex < shadowLightCount; ++lightIndex) {
+        renderContext->OMSetRenderTargets(0, nullptr, shadowDepthViews[lightIndex]);
+        renderContext->ClearDepthStencilView(
+            shadowDepthViews[lightIndex],
+            D3D11_CLEAR_DEPTH,
+            1.0f,
+            0);
+
+        SceneConstants shadowConstants{};
+        DirectX::XMStoreFloat4x4(
+            &shadowConstants.worldViewProjection,
+            world * lightViewProjections[lightIndex]);
+        D3D11_MAPPED_SUBRESOURCE shadowMapped{};
+        if (FAILED(renderContext->Map(
+                constantBuffer,
+                0,
+                D3D11_MAP_WRITE_DISCARD,
+                0,
+                &shadowMapped))) {
+            shadowsRendered = false;
+            break;
+        }
+        std::memcpy(shadowMapped.pData, &shadowConstants, sizeof(shadowConstants));
+        renderContext->Unmap(constantBuffer, 0);
+        sourceMesh->Draw(renderContext, fallbackTextures.data(), materialConstantBuffer, false);
+        sourceMesh->Draw(renderContext, fallbackTextures.data(), materialConstantBuffer, true);
+    }
+    renderContext->OMSetRenderTargets(0, nullptr, nullptr);
+    if (!shadowsRendered) {
+        DiscardCommands(renderContext);
+        return false;
+    }
+
+    renderContext->OMSetRenderTargets(1, &renderTargetView, target->depthStencilView);
+    renderContext->OMSetBlendState(opaqueBlendState, nullptr, 0xFFFFFFFF);
+    renderContext->OMSetDepthStencilState(depthWriteState, 0);
+    renderContext->RSSetState(rasterizerState);
+    renderContext->RSSetViewports(1, &viewport);
+    renderContext->RSSetScissorRects(1, &scissor);
+    renderContext->VSSetShader(vertexShader, nullptr, 0);
+    renderContext->PSSetShader(pixelShader, nullptr, 0);
+    renderContext->PSSetShaderResources(10, 1, &shadowTextureView);
+    renderContext->PSSetSamplers(1, 1, &shadowSamplerState);
+
     D3D11_MAPPED_SUBRESOURCE mapped{};
     bool rendered = false;
     if (SUCCEEDED(renderContext->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -846,7 +1182,7 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
         rendered = CopyRenderTargetToMesh(sourceMesh, target);
     }
 
-    std::array<ID3D11ShaderResourceView*, MeshTextureSlotCount> noTextures{};
+    std::array<ID3D11ShaderResourceView*, MeshTextureSlotCount + 1> noTextures{};
     renderContext->PSSetShaderResources(0, static_cast<UINT>(noTextures.size()), noTextures.data());
     if (!rendered) {
         DiscardCommands(renderContext);
