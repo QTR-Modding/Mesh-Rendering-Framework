@@ -2,7 +2,10 @@
 #include "MeshRenderingFrameworkAPI.h"
 
 #include <array>
+#include <memory>
 #include <unordered_map>
+
+class GameAnimation;
 
 struct MeshVertex {
     float position[3]{};
@@ -17,6 +20,12 @@ struct MeshBoneFrame {
     RE::NiPoint3 axisX{};
     RE::NiPoint3 axisY{};
     RE::NiPoint3 axisZ{};
+};
+
+struct MeshSkinWeight {
+    std::uint32_t vertexIndex = 0;
+    std::uint16_t boneIndex = 0;
+    float weight = 0.0f;
 };
 
 enum class MeshTextureSlot : std::size_t {
@@ -116,7 +125,12 @@ struct MeshPart {
     bool faceOrSkin = false;
     bool hairMaterial = false;
     bool skinTinted = false;
+    bool vertexBufferDirty = false;
     RE::NiPoint3 center{};
+    std::vector<MeshVertex> bindVertices;
+    std::vector<std::string> skinBoneNames;
+    std::vector<MeshBoneFrame> bindBoneFrames;
+    std::vector<MeshSkinWeight> skinWeights;
 
     MeshPart() = default;
     MeshPart(const MeshPart&) = delete;
@@ -132,6 +146,9 @@ class Mesh {
 private:
     static inline uint64_t autoIncrement = 0;
     float boundingRadius = 0.0f;
+    RE::NiPoint3 animationCenter{};
+    RE::NiMatrix3 animationRotation{};
+    std::unique_ptr<GameAnimation> animation;
     void Fit(RE::NiPoint2 position, RE::NiPoint2 scale);
     void Initialize(uint32_t width, uint32_t height);
     bool Load(const char* nifPath);
@@ -155,9 +172,16 @@ public:
     bool IsValid() const;
     bool InitializeGpuResources(ID3D11Device* device);
     void ResetGpuResources();
+    bool SetBoneLocalPose(
+        const char* const* boneNames,
+        const std::int16_t* parentIndices,
+        const MeshRenderingFrameworkAPI::BoneTransform* transforms,
+        uint32_t transformCount);
+    bool PlayAnimation(const char* animationPath, const char* skeletonPath, bool loop);
+    bool UpdateAnimation();
     void Draw(
         ID3D11DeviceContext* context,
         ID3D11ShaderResourceView* const* fallbackTextures,
         ID3D11Buffer* materialConstantBuffer,
-        bool transparentPass) const;
+        bool transparentPass);
 };

@@ -1,5 +1,6 @@
 #include "Mesh.h"
 
+#include "GameAnimation.h"
 #include "MeshMath.h"
 
 #include "RE/N/NiMath.h"
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <utility>
@@ -423,6 +425,86 @@ namespace
         return direction;
     }
 
+    RE::NiPoint3 ApplyBoneFrame(
+        const MeshBoneFrame& frame,
+        const RE::NiPoint3& value,
+        bool direction)
+    {
+        RE::NiPoint3 result =
+            frame.axisX * value.x +
+            frame.axisY * value.y +
+            frame.axisZ * value.z;
+        if (!direction) {
+            result += frame.origin;
+        }
+        return result;
+    }
+
+    MeshBoneFrame CreateBoneFrame(const MeshRenderingFrameworkAPI::BoneTransform& transform)
+    {
+        float x = transform.rotation[0];
+        float y = transform.rotation[1];
+        float z = transform.rotation[2];
+        float w = transform.rotation[3];
+        const float quaternionLength = std::sqrt(x * x + y * y + z * z + w * w);
+        if (quaternionLength > 0.00001f) {
+            x /= quaternionLength;
+            y /= quaternionLength;
+            z /= quaternionLength;
+            w /= quaternionLength;
+        } else {
+            x = 0.0f;
+            y = 0.0f;
+            z = 0.0f;
+            w = 1.0f;
+        }
+
+        MeshBoneFrame frame;
+        frame.origin = {
+            transform.translation[0],
+            transform.translation[1],
+            transform.translation[2]
+        };
+        frame.axisX = RE::NiPoint3{
+            1.0f - 2.0f * (y * y + z * z),
+            2.0f * (x * y + z * w),
+            2.0f * (x * z - y * w)
+        } * transform.scale[0];
+        frame.axisY = RE::NiPoint3{
+            2.0f * (x * y - z * w),
+            1.0f - 2.0f * (x * x + z * z),
+            2.0f * (y * z + x * w)
+        } * transform.scale[1];
+        frame.axisZ = RE::NiPoint3{
+            2.0f * (x * z + y * w),
+            2.0f * (y * z - x * w),
+            1.0f - 2.0f * (x * x + y * y)
+        } * transform.scale[2];
+        return frame;
+    }
+
+    MeshBoneFrame ComposeBoneFrames(const MeshBoneFrame& parent, const MeshBoneFrame& local)
+    {
+        MeshBoneFrame result;
+        result.origin = ApplyBoneFrame(parent, local.origin, false);
+        result.axisX = ApplyBoneFrame(parent, local.axisX, true);
+        result.axisY = ApplyBoneFrame(parent, local.axisY, true);
+        result.axisZ = ApplyBoneFrame(parent, local.axisZ, true);
+        return result;
+    }
+
+    MeshBoneFrame RotateBoneFrame(
+        const RE::NiMatrix3& rotation,
+        const MeshBoneFrame& frame)
+    {
+        MeshBoneFrame result;
+        result.origin = rotation * frame.origin;
+        result.axisX = rotation * frame.axisX;
+        result.axisY = rotation * frame.axisY;
+        result.axisZ = rotation * frame.axisZ;
+        return result;
+    }
+
     std::size_t TextureSlotIndex(MeshTextureSlot slot)
     {
         return static_cast<std::size_t>(slot);
@@ -522,7 +604,12 @@ MeshPart::MeshPart(MeshPart&& other) noexcept
       faceOrSkin(other.faceOrSkin),
       hairMaterial(other.hairMaterial),
       skinTinted(other.skinTinted),
-      center(other.center)
+      vertexBufferDirty(other.vertexBufferDirty),
+      center(other.center),
+      bindVertices(std::move(other.bindVertices)),
+      skinBoneNames(std::move(other.skinBoneNames)),
+      bindBoneFrames(std::move(other.bindBoneFrames)),
+      skinWeights(std::move(other.skinWeights))
 {
     std::copy(std::begin(other.specularColor), std::end(other.specularColor), specularColor);
     std::copy(std::begin(other.emissiveColor), std::end(other.emissiveColor), emissiveColor);
@@ -571,7 +658,12 @@ MeshPart& MeshPart::operator=(MeshPart&& other) noexcept
         faceOrSkin = other.faceOrSkin;
         hairMaterial = other.hairMaterial;
         skinTinted = other.skinTinted;
+        vertexBufferDirty = other.vertexBufferDirty;
         center = other.center;
+        bindVertices = std::move(other.bindVertices);
+        skinBoneNames = std::move(other.skinBoneNames);
+        bindBoneFrames = std::move(other.bindBoneFrames);
+        skinWeights = std::move(other.skinWeights);
     }
     return *this;
 }
@@ -589,6 +681,7 @@ void MeshPart::ResetGpuResources()
     ReleaseResource(indexBuffer);
     ReleaseResource(vertexBuffer);
     textureLoadAttempted.fill(false);
+    vertexBufferDirty = false;
 }
 
 void Mesh::Fit(RE::NiPoint2 position, RE::NiPoint2 rectSize)
@@ -649,6 +742,7 @@ bool Mesh::Load(const char* nifPath)
     }
 
     const RE::NiMatrix3 inventoryRotation = GetInventoryRotation(file);
+    animationRotation = inventoryRotation;
     boneFrames.clear();
     const std::string faceTintPath = GetFaceTintPath(sourcePath);
     const bool hasFaceTintTexture = !faceTintPath.empty() && GameResourceExists(faceTintPath);
@@ -745,6 +839,31 @@ bool Mesh::Load(const char* nifPath)
                 vertex.color[3] = colors->at(index).a;
             }
             part.vertices.push_back(vertex);
+        }
+
+        if (hasSkinPose) {
+            for (std::uint32_t sourceBoneIndex = 0; sourceBoneIndex < boneNames.size(); ++sourceBoneIndex) {
+                nifly::MatTransform boneToGlobal;
+                if (!file.GetNodeTransformToGlobal(boneNames[sourceBoneIndex], boneToGlobal)) {
+                    continue;
+                }
+
+                std::unordered_map<std::uint16_t, float> weights;
+                if (file.GetShapeBoneWeights(shape, sourceBoneIndex, weights) == 0) {
+                    continue;
+                }
+
+                const std::uint16_t partBoneIndex =
+                    static_cast<std::uint16_t>(part.skinBoneNames.size());
+                part.skinBoneNames.push_back(boneNames[sourceBoneIndex]);
+                part.bindBoneFrames.push_back(CreateBoneFrame(inventoryRotation, boneToGlobal));
+                for (const auto& [vertexIndex, weight] : weights) {
+                    if (vertexIndex >= part.vertices.size() || weight <= 0.0f) {
+                        continue;
+                    }
+                    part.skinWeights.push_back({vertexIndex, partBoneIndex, weight});
+                }
+            }
         }
 
         RE::NiPoint3 partMinimum{
@@ -997,8 +1116,12 @@ bool Mesh::Load(const char* nifPath)
     mesh->boundMin = minimum;
     mesh->boundMax = maximum;
     const RE::NiPoint3 center = (minimum + maximum) * 0.5f;
+    animationCenter = center;
     for (MeshPart& part : parts) {
         part.center -= center;
+        for (MeshBoneFrame& bindBoneFrame : part.bindBoneFrames) {
+            bindBoneFrame.origin -= center;
+        }
         for (MeshVertex& vertex : part.vertices) {
             vertex.position[0] -= center.x;
             vertex.position[1] -= center.y;
@@ -1008,6 +1131,9 @@ bool Mesh::Load(const char* nifPath)
                 vertex.position[1] * vertex.position[1] +
                 vertex.position[2] * vertex.position[2]);
             boundingRadius = std::max(boundingRadius, radius);
+        }
+        if (!part.skinWeights.empty()) {
+            part.bindVertices = part.vertices;
         }
     }
     return true;
@@ -1046,6 +1172,10 @@ Mesh::Mesh(
             return false;
         }
 
+        if (parts.empty()) {
+            animationRotation = component.animationRotation;
+        }
+
         const RE::NiPoint3 componentCenter = (component.mesh->boundMin + component.mesh->boundMax) * 0.5f;
         MeshBoneFrame bodyAlignmentFrame{};
         MeshBoneFrame componentAlignmentFrame{};
@@ -1082,12 +1212,37 @@ Mesh::Mesh(
 
         for (MeshPart& part : component.parts) {
             part.center += componentCenter;
+            for (MeshBoneFrame& bindBoneFrame : part.bindBoneFrames) {
+                bindBoneFrame.origin += componentCenter;
+            }
             if (hasBoneAlignment) {
                 part.center = TransformBetweenBoneFrames(
                     part.center,
                     componentAlignmentFrame,
                     bodyAlignmentFrame,
                     false);
+                for (MeshBoneFrame& bindBoneFrame : part.bindBoneFrames) {
+                    bindBoneFrame.origin = TransformBetweenBoneFrames(
+                        bindBoneFrame.origin,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        false);
+                    bindBoneFrame.axisX = TransformBetweenBoneFrames(
+                        bindBoneFrame.axisX,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true);
+                    bindBoneFrame.axisY = TransformBetweenBoneFrames(
+                        bindBoneFrame.axisY,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true);
+                    bindBoneFrame.axisZ = TransformBetweenBoneFrames(
+                        bindBoneFrame.axisZ,
+                        componentAlignmentFrame,
+                        bodyAlignmentFrame,
+                        true);
+                }
             }
             for (MeshVertex& vertex : part.vertices) {
                 RE::NiPoint3 position{
@@ -1172,8 +1327,12 @@ Mesh::Mesh(
     mesh->boundMin = minimum;
     mesh->boundMax = maximum;
     const RE::NiPoint3 center = (minimum + maximum) * 0.5f;
+    animationCenter = center;
     for (MeshPart& part : parts) {
         part.center -= center;
+        for (MeshBoneFrame& bindBoneFrame : part.bindBoneFrames) {
+            bindBoneFrame.origin -= center;
+        }
         for (MeshVertex& vertex : part.vertices) {
             vertex.position[0] -= center.x;
             vertex.position[1] -= center.y;
@@ -1183,6 +1342,9 @@ Mesh::Mesh(
                 vertex.position[1] * vertex.position[1] +
                 vertex.position[2] * vertex.position[2]);
             boundingRadius = std::max(boundingRadius, radius);
+        }
+        if (!part.skinWeights.empty()) {
+            part.bindVertices = part.vertices;
         }
     }
 
@@ -1205,6 +1367,193 @@ bool Mesh::IsValid() const
     return mesh && !parts.empty();
 }
 
+bool Mesh::SetBoneLocalPose(
+    const char* const* boneNames,
+    const std::int16_t* parentIndices,
+    const MeshRenderingFrameworkAPI::BoneTransform* transforms,
+    uint32_t transformCount)
+{
+    if (!mesh || !boneNames || !parentIndices || !transforms || transformCount == 0) {
+        return false;
+    }
+
+    std::vector<MeshBoneFrame> globalFrames(transformCount);
+    std::unordered_map<std::string, MeshBoneFrame> animatedBoneFrames;
+    animatedBoneFrames.reserve(transformCount);
+    for (std::uint32_t boneIndex = 0; boneIndex < transformCount; ++boneIndex) {
+        MeshBoneFrame globalFrame = CreateBoneFrame(transforms[boneIndex]);
+        const std::int16_t parentIndex = parentIndices[boneIndex];
+        if (parentIndex >= 0 && static_cast<std::uint32_t>(parentIndex) < boneIndex) {
+            globalFrame = ComposeBoneFrames(globalFrames[parentIndex], globalFrame);
+        }
+        globalFrames[boneIndex] = globalFrame;
+
+        if (!boneNames[boneIndex] || !boneNames[boneIndex][0]) {
+            continue;
+        }
+        MeshBoneFrame renderFrame = RotateBoneFrame(animationRotation, globalFrame);
+        renderFrame.origin -= animationCenter;
+        animatedBoneFrames.insert_or_assign(boneNames[boneIndex], renderFrame);
+    }
+
+    constexpr std::string_view headBoneName = "NPC Head [Head]";
+    bool updated = false;
+    for (MeshPart& part : parts) {
+        if (part.bindVertices.size() != part.vertices.size() ||
+            part.skinBoneNames.size() != part.bindBoneFrames.size() ||
+            part.skinWeights.empty()) {
+            continue;
+        }
+
+        const MeshBoneFrame* fallbackBindFrame = nullptr;
+        const MeshBoneFrame* fallbackAnimatedFrame = nullptr;
+        const auto animatedHead = animatedBoneFrames.find(std::string(headBoneName));
+        if (animatedHead != animatedBoneFrames.end()) {
+            for (std::size_t boneIndex = 0; boneIndex < part.skinBoneNames.size(); ++boneIndex) {
+                if (part.skinBoneNames[boneIndex] == headBoneName) {
+                    fallbackBindFrame = &part.bindBoneFrames[boneIndex];
+                    fallbackAnimatedFrame = &animatedHead->second;
+                    break;
+                }
+            }
+        }
+
+        part.vertices = part.bindVertices;
+        std::vector<RE::NiPoint3> positionSums(part.vertices.size());
+        std::vector<RE::NiPoint3> normalSums(part.vertices.size());
+        std::vector<RE::NiPoint3> tangentSums(part.vertices.size());
+        std::vector<float> weightSums(part.vertices.size(), 0.0f);
+
+        for (const MeshSkinWeight& skinWeight : part.skinWeights) {
+            if (skinWeight.vertexIndex >= part.bindVertices.size() ||
+                skinWeight.boneIndex >= part.skinBoneNames.size() ||
+                skinWeight.weight <= 0.0f) {
+                continue;
+            }
+
+            const MeshVertex& bindVertex = part.bindVertices[skinWeight.vertexIndex];
+            const RE::NiPoint3 bindPosition{
+                bindVertex.position[0],
+                bindVertex.position[1],
+                bindVertex.position[2]
+            };
+            const RE::NiPoint3 bindNormal{
+                bindVertex.normal[0],
+                bindVertex.normal[1],
+                bindVertex.normal[2]
+            };
+            const RE::NiPoint3 bindTangent{
+                bindVertex.tangent[0],
+                bindVertex.tangent[1],
+                bindVertex.tangent[2]
+            };
+
+            const MeshBoneFrame* sourceFrame = nullptr;
+            const MeshBoneFrame* targetFrame = nullptr;
+            const auto animatedBone = animatedBoneFrames.find(part.skinBoneNames[skinWeight.boneIndex]);
+            if (animatedBone != animatedBoneFrames.end()) {
+                sourceFrame = &part.bindBoneFrames[skinWeight.boneIndex];
+                targetFrame = &animatedBone->second;
+            } else if (fallbackBindFrame && fallbackAnimatedFrame) {
+                sourceFrame = fallbackBindFrame;
+                targetFrame = fallbackAnimatedFrame;
+            }
+
+            const RE::NiPoint3 posedPosition = sourceFrame && targetFrame
+                ? TransformBetweenBoneFrames(bindPosition, *sourceFrame, *targetFrame, false)
+                : bindPosition;
+            const RE::NiPoint3 posedNormal = sourceFrame && targetFrame
+                ? TransformBetweenBoneFrames(bindNormal, *sourceFrame, *targetFrame, true)
+                : bindNormal;
+            const RE::NiPoint3 posedTangent = sourceFrame && targetFrame
+                ? TransformBetweenBoneFrames(bindTangent, *sourceFrame, *targetFrame, true)
+                : bindTangent;
+            positionSums[skinWeight.vertexIndex] += posedPosition * skinWeight.weight;
+            normalSums[skinWeight.vertexIndex] += posedNormal * skinWeight.weight;
+            tangentSums[skinWeight.vertexIndex] += posedTangent * skinWeight.weight;
+            weightSums[skinWeight.vertexIndex] += skinWeight.weight;
+        }
+
+        RE::NiPoint3 partMinimum{
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max()
+        };
+        RE::NiPoint3 partMaximum{
+            std::numeric_limits<float>::lowest(),
+            std::numeric_limits<float>::lowest(),
+            std::numeric_limits<float>::lowest()
+        };
+        for (std::size_t vertexIndex = 0; vertexIndex < part.vertices.size(); ++vertexIndex) {
+            MeshVertex& vertex = part.vertices[vertexIndex];
+            const float weight = weightSums[vertexIndex];
+            if (weight > 0.00001f) {
+                const RE::NiPoint3 position = positionSums[vertexIndex] / weight;
+                const RE::NiPoint3 normal = NormalizeDirection(normalSums[vertexIndex] / weight);
+                const RE::NiPoint3 weightedTangent = tangentSums[vertexIndex] / weight;
+                const RE::NiPoint3 tangent = NormalizeDirection(
+                    weightedTangent - normal * DotProduct(normal, weightedTangent));
+                vertex.position[0] = position.x;
+                vertex.position[1] = position.y;
+                vertex.position[2] = position.z;
+                vertex.normal[0] = normal.x;
+                vertex.normal[1] = normal.y;
+                vertex.normal[2] = normal.z;
+                vertex.tangent[0] = tangent.x;
+                vertex.tangent[1] = tangent.y;
+                vertex.tangent[2] = tangent.z;
+            }
+            partMinimum.x = std::min(partMinimum.x, vertex.position[0]);
+            partMinimum.y = std::min(partMinimum.y, vertex.position[1]);
+            partMinimum.z = std::min(partMinimum.z, vertex.position[2]);
+            partMaximum.x = std::max(partMaximum.x, vertex.position[0]);
+            partMaximum.y = std::max(partMaximum.y, vertex.position[1]);
+            partMaximum.z = std::max(partMaximum.z, vertex.position[2]);
+        }
+        part.center = (partMinimum + partMaximum) * 0.5f;
+        part.vertexBufferDirty = true;
+        updated = true;
+    }
+
+    if (updated) {
+        mesh->mustUpdate = true;
+    }
+    return updated;
+}
+
+bool Mesh::PlayAnimation(const char* animationPath, const char* skeletonPath, bool loop)
+{
+    std::unique_ptr<GameAnimation> loadedAnimation = std::make_unique<GameAnimation>();
+    if (!loadedAnimation->Load(animationPath, skeletonPath, loop)) {
+        return false;
+    }
+    animation = std::move(loadedAnimation);
+    mesh->alwaysUpdate = true;
+    mesh->mustUpdate = true;
+    return true;
+}
+
+bool Mesh::UpdateAnimation()
+{
+    if (!animation) {
+        return false;
+    }
+    std::vector<MeshRenderingFrameworkAPI::BoneTransform> pose;
+    if (!animation->Sample(pose) || pose.empty()) {
+        return false;
+    }
+    const std::vector<const char*>& names = animation->GetBoneNames();
+    const std::vector<std::int16_t>& parents = animation->GetParentIndices();
+    if (names.size() != pose.size() || parents.size() != pose.size()) {
+        return false;
+    }
+    return SetBoneLocalPose(
+        names.data(),
+        parents.data(),
+        pose.data(),
+        static_cast<std::uint32_t>(pose.size()));
+}
+
 bool Mesh::InitializeGpuResources(ID3D11Device* device)
 {
     if (!device || !IsValid()) {
@@ -1215,8 +1564,10 @@ bool Mesh::InitializeGpuResources(ID3D11Device* device)
         if (!part.vertexBuffer) {
             D3D11_BUFFER_DESC vertexDescription{};
             vertexDescription.ByteWidth = static_cast<UINT>(part.vertices.size() * sizeof(MeshVertex));
-            vertexDescription.Usage = D3D11_USAGE_IMMUTABLE;
+            const bool animated = !part.skinWeights.empty();
+            vertexDescription.Usage = animated ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_IMMUTABLE;
             vertexDescription.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            vertexDescription.CPUAccessFlags = animated ? D3D11_CPU_ACCESS_WRITE : 0;
             D3D11_SUBRESOURCE_DATA vertexData{};
             vertexData.pSysMem = part.vertices.data();
             const HRESULT vertexResult = device->CreateBuffer(&vertexDescription, &vertexData, &part.vertexBuffer);
@@ -1228,6 +1579,7 @@ bool Mesh::InitializeGpuResources(ID3D11Device* device)
                 ResetGpuResources();
                 return false;
             }
+            part.vertexBufferDirty = false;
         }
 
         if (!part.indexBuffer) {
@@ -1294,7 +1646,7 @@ void Mesh::Draw(
     ID3D11DeviceContext* context,
     ID3D11ShaderResourceView* const* fallbackTextures,
     ID3D11Buffer* materialConstantBuffer,
-    bool transparentPass) const
+    bool transparentPass)
 {
     if (!context || !fallbackTextures || !materialConstantBuffer) {
         return;
@@ -1303,9 +1655,9 @@ void Mesh::Draw(
     constexpr UINT stride = sizeof(MeshVertex);
     constexpr UINT offset = 0;
 
-    std::vector<const MeshPart*> drawParts;
+    std::vector<MeshPart*> drawParts;
     drawParts.reserve(parts.size());
-    for (const MeshPart& part : parts) {
+    for (MeshPart& part : parts) {
         const bool transparent = part.alphaMode == MeshAlphaMode::Blend;
         if (transparent == transparentPass) {
             drawParts.push_back(&part);
@@ -1320,10 +1672,27 @@ void Mesh::Draw(
         });
     }
 
-    for (const MeshPart* partPointer : drawParts) {
-        const MeshPart& part = *partPointer;
+    for (MeshPart* partPointer : drawParts) {
+        MeshPart& part = *partPointer;
         if (!part.vertexBuffer || !part.indexBuffer || part.indices.empty()) {
             continue;
+        }
+
+        if (part.vertexBufferDirty) {
+            D3D11_MAPPED_SUBRESOURCE mappedVertexBuffer{};
+            if (SUCCEEDED(context->Map(
+                    part.vertexBuffer,
+                    0,
+                    D3D11_MAP_WRITE_DISCARD,
+                    0,
+                    &mappedVertexBuffer))) {
+                std::memcpy(
+                    mappedVertexBuffer.pData,
+                    part.vertices.data(),
+                    part.vertices.size() * sizeof(MeshVertex));
+                context->Unmap(part.vertexBuffer, 0);
+                part.vertexBufferDirty = false;
+            }
         }
 
         MeshMaterialConstants materialConstants{};

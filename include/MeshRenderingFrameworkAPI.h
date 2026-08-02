@@ -16,6 +16,12 @@
 
 namespace MeshRenderingFrameworkAPI {
 
+    struct BoneTransform {
+        float translation[3]{};
+        float rotation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+        float scale[3]{1.0f, 1.0f, 1.0f};
+    };
+
     namespace Internal {
         class IMesh {
         public:
@@ -82,6 +88,27 @@ namespace MeshRenderingFrameworkAPI {
                 return nullptr;
             }
             return function(objects, objectCount, width, height);
+        }
+
+        inline bool __stdcall IMesh_SetBoneLocalPose(
+            IMesh* mesh,
+            const char* const* boneNames,
+            const std::int16_t* parentIndices,
+            const BoneTransform* transforms,
+            uint32_t transformCount)
+        {
+            auto function = GetFunction<decltype(&IMesh_SetBoneLocalPose)>("IMesh_SetBoneLocalPose");
+            return function && function(mesh, boneNames, parentIndices, transforms, transformCount);
+        }
+
+        inline bool __stdcall IMesh_PlayAnimation(
+            IMesh* mesh,
+            const char* animationPath,
+            const char* skeletonPath,
+            bool loop)
+        {
+            auto function = GetFunction<decltype(&IMesh_PlayAnimation)>("IMesh_PlayAnimation");
+            return function && function(mesh, animationPath, skeletonPath, loop);
         }
 
         inline void __stdcall IMesh_Delete(IMesh* mesh) {
@@ -511,6 +538,32 @@ namespace MeshRenderingFrameworkAPI {
                 return;
             }
             mesh->alwaysUpdate = value;
+        }
+        bool SetBoneLocalPose(
+            const char* const* boneNames,
+            const std::int16_t* parentIndices,
+            const BoneTransform* transforms,
+            uint32_t transformCount)
+        {
+            if (!mesh) {
+                return false;
+            }
+            return Internal::IMesh_SetBoneLocalPose(
+                mesh,
+                boneNames,
+                parentIndices,
+                transforms,
+                transformCount);
+        }
+        bool PlayAnimation(
+            const char* animationPath,
+            bool loop = true,
+            const char* skeletonPath = "meshes\\actors\\character\\character assets\\skeleton.hkx")
+        {
+            if (!mesh) {
+                return false;
+            }
+            return Internal::IMesh_PlayAnimation(mesh, animationPath, skeletonPath, loop);
         }
         ~Mesh() {
             if (mesh) {

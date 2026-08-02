@@ -410,6 +410,47 @@ MeshRenderingFrameworkAPI::Internal::IMesh* RenderManager::AddByNiAVObjectList(
     return nullptr;
 }
 
+bool RenderManager::SetBoneLocalPose(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* const* boneNames,
+    const std::int16_t* parentIndices,
+    const MeshRenderingFrameworkAPI::BoneTransform* transforms,
+    uint32_t transformCount)
+{
+    if (!mesh || !boneNames || !parentIndices || !transforms || transformCount == 0) {
+        return false;
+    }
+
+    std::unique_lock lock(mutex);
+    const auto meshEntry = meshes.find(mesh);
+    if (meshEntry == meshes.end() || !meshEntry->second) {
+        return false;
+    }
+    return meshEntry->second->SetBoneLocalPose(
+        boneNames,
+        parentIndices,
+        transforms,
+        transformCount);
+}
+
+bool RenderManager::PlayAnimation(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* animationPath,
+    const char* skeletonPath,
+    bool loop)
+{
+    if (!mesh || !animationPath || !animationPath[0] || !skeletonPath || !skeletonPath[0]) {
+        return false;
+    }
+
+    std::unique_lock lock(mutex);
+    const auto meshEntry = meshes.find(mesh);
+    if (meshEntry == meshes.end() || !meshEntry->second) {
+        return false;
+    }
+    return meshEntry->second->PlayAnimation(animationPath, skeletonPath, loop);
+}
+
 bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* target)
 {
     if (!sourceMesh || !sourceMesh->mesh || !target || !target->texture || !device || !renderContext) {
@@ -769,6 +810,7 @@ bool RenderManager::RenderLocked(MeshRenderingFrameworkAPI::Internal::IMesh* out
     if (meshIterator == meshes.end() || !meshIterator->second) {
         return false;
     }
+    meshIterator->second->UpdateAnimation();
     if (!outputMesh->mustUpdate && !outputMesh->alwaysUpdate) {
         return outputMesh->SRV != nullptr;
     }

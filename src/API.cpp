@@ -80,6 +80,30 @@ MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_CreateByNiAVObjectList(RE::NiA
     return RenderManager::AddByNiAVObjectList(objects, objectCount, width, height);
 }
 
+bool IMesh_SetBoneLocalPose(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* const* boneNames,
+    const std::int16_t* parentIndices,
+    const MeshRenderingFrameworkAPI::BoneTransform* transforms,
+    uint32_t transformCount)
+{
+    return RenderManager::SetBoneLocalPose(
+        mesh,
+        boneNames,
+        parentIndices,
+        transforms,
+        transformCount);
+}
+
+bool IMesh_PlayAnimation(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    const char* animationPath,
+    const char* skeletonPath,
+    bool loop)
+{
+    return RenderManager::PlayAnimation(mesh, animationPath, skeletonPath, loop);
+}
+
 void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh) { 
     RenderManager::Delete(mesh);
 }

@@ -70,6 +70,17 @@ public:
         uint32_t width,
         uint32_t height);
     static MeshRenderingFrameworkAPI::Internal::IMesh* AddByNiAVObjectList(RE::NiAVObject* const* objects, uint32_t objectCount, uint32_t width, uint32_t height);
+    static bool SetBoneLocalPose(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+        const char* const* boneNames,
+        const std::int16_t* parentIndices,
+        const MeshRenderingFrameworkAPI::BoneTransform* transforms,
+        uint32_t transformCount);
+    static bool PlayAnimation(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+        const char* animationPath,
+        const char* skeletonPath,
+        bool loop);
 
     static bool Render(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
     static void RenderPending();
