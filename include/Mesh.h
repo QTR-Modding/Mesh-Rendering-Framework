@@ -4,6 +4,7 @@
 #include <array>
 #include <memory>
 #include <unordered_map>
+#include <d3d11.h>
 
 class GameAnimation;
 
@@ -175,6 +176,8 @@ public:
     ~Mesh();
 
     MeshRenderingFrameworkAPI::Internal::IMesh* mesh = nullptr;
+    // Private-device side of the texture shared with mesh->texture.
+    ID3D11Texture2D* outputTexture = nullptr;
     std::string sourcePath;
     std::vector<MeshPart> parts;
     std::unordered_map<std::string, MeshBoneFrame> boneFrames;

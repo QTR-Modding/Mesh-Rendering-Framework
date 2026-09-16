@@ -113,7 +113,7 @@ target_include_directories(
     ${CLIB_UTIL_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(${PROJECT_NAME} PRIVATE Microsoft::DirectXTex nifly d3dcompiler)
+target_link_libraries(${PROJECT_NAME} PRIVATE Microsoft::DirectXTex nifly d3d11 d3dcompiler)
 target_compile_definitions(${PRODUCT_NAME} PRIVATE MOD_NAME="${BEAUTIFUL_NAME}")
 
 

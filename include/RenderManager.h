@@ -30,8 +30,10 @@ struct RenderTarget {
 };
 
 class RenderManager {
+    // Skyrim's device is used only to open shared output textures for API consumers.
+    static inline ID3D11Device* presentationDevice;
+    // All framework rendering and synchronization use this private device and context.
     static inline ID3D11Device* device;
-    static inline ID3D11DeviceContext* immediateContext;
     static inline ID3D11DeviceContext* renderContext;
     static inline ID3D11Query* completionQuery;
     static inline ID3D11VertexShader* vertexShader = nullptr;

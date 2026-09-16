@@ -1682,6 +1682,7 @@ Mesh::~Mesh()
         ReleaseResource(mesh->texture);
         mesh->savePath = nullptr;
     }
+    ReleaseResource(outputTexture);
     delete mesh;
 }
 
@@ -2277,6 +2278,7 @@ void Mesh::ResetGpuResources()
         ReleaseResource(mesh->texture);
         mesh->mustUpdate = true;
     }
+    ReleaseResource(outputTexture);
 }
 
 void Mesh::Draw(

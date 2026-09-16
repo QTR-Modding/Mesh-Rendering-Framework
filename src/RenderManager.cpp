@@ -4,6 +4,7 @@
 #include <DirectXTex.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dxgi.h>
 #include <wincodec.h>
 
 #include <algorithm>
@@ -23,18 +24,53 @@ namespace
         }
     }
 
-    void DiscardCommands(ID3D11DeviceContext* deferredContext)
+    bool CreatePrivateDevice(
+        ID3D11Device* presentationDevice,
+        ID3D11Device** privateDevice,
+        ID3D11DeviceContext** privateContext)
     {
-        if (!deferredContext) {
-            return;
+        if (!presentationDevice || !privateDevice || !privateContext) {
+            return false;
         }
 
-        ID3D11CommandList* commandList = nullptr;
-        if (SUCCEEDED(deferredContext->FinishCommandList(FALSE, &commandList))) {
-            ReleaseResource(commandList);
-        } else {
-            deferredContext->ClearState();
+        *privateDevice = nullptr;
+        *privateContext = nullptr;
+
+        IDXGIDevice* dxgiDevice = nullptr;
+        HRESULT result = presentationDevice->QueryInterface(
+            __uuidof(IDXGIDevice),
+            reinterpret_cast<void**>(&dxgiDevice));
+        if (FAILED(result)) {
+            return false;
         }
+
+        IDXGIAdapter* adapter = nullptr;
+        result = dxgiDevice->GetAdapter(&adapter);
+        ReleaseResource(dxgiDevice);
+        if (FAILED(result) || !adapter) {
+            ReleaseResource(adapter);
+            return false;
+        }
+
+        const D3D_FEATURE_LEVEL featureLevel = presentationDevice->GetFeatureLevel();
+        result = D3D11CreateDevice(
+            adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
+            nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            &featureLevel,
+            1,
+            D3D11_SDK_VERSION,
+            privateDevice,
+            nullptr,
+            privateContext);
+        ReleaseResource(adapter);
+        if (FAILED(result)) {
+            ReleaseResource(*privateContext);
+            ReleaseResource(*privateDevice);
+            return false;
+        }
+        return true;
     }
 
     struct SceneConstants {
@@ -673,7 +709,8 @@ bool RenderManager::SetTextureSet(
 
 bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* target)
 {
-    if (!sourceMesh || !sourceMesh->mesh || !target || !target->texture || !device || !renderContext) {
+    if (!sourceMesh || !sourceMesh->mesh || !target || !target->texture ||
+        !presentationDevice || !device || !renderContext) {
         return false;
     }
 
@@ -681,7 +718,7 @@ bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* targe
     D3D11_TEXTURE2D_DESC targetDescription{};
     target->texture->GetDesc(&targetDescription);
 
-    bool needsTexture = !outputMesh->texture || !outputMesh->SRV;
+    bool needsTexture = !sourceMesh->outputTexture || !outputMesh->texture || !outputMesh->SRV;
     if (outputMesh->texture) {
         D3D11_TEXTURE2D_DESC currentDescription{};
         outputMesh->texture->GetDesc(&currentDescription);
@@ -693,25 +730,60 @@ bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* targe
     if (needsTexture) {
         ReleaseResource(outputMesh->SRV);
         ReleaseResource(outputMesh->texture);
+        ReleaseResource(sourceMesh->outputTexture);
 
         D3D11_TEXTURE2D_DESC outputDescription = targetDescription;
         outputDescription.Usage = D3D11_USAGE_DEFAULT;
-        outputDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        outputDescription.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         outputDescription.CPUAccessFlags = 0;
-        outputDescription.MiscFlags = 0;
+        outputDescription.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
-        HRESULT result = device->CreateTexture2D(&outputDescription, nullptr, &outputMesh->texture);
+        HRESULT result = device->CreateTexture2D(
+            &outputDescription,
+            nullptr,
+            &sourceMesh->outputTexture);
         if (FAILED(result)) {
             return false;
         }
-        result = device->CreateShaderResourceView(outputMesh->texture, nullptr, &outputMesh->SRV);
+
+        IDXGIResource* sharedResource = nullptr;
+        result = sourceMesh->outputTexture->QueryInterface(
+            __uuidof(IDXGIResource),
+            reinterpret_cast<void**>(&sharedResource));
+        if (FAILED(result)) {
+            ReleaseResource(sourceMesh->outputTexture);
+            return false;
+        }
+
+        HANDLE sharedHandle = nullptr;
+        result = sharedResource->GetSharedHandle(&sharedHandle);
+        ReleaseResource(sharedResource);
+        if (FAILED(result) || !sharedHandle) {
+            ReleaseResource(sourceMesh->outputTexture);
+            return false;
+        }
+
+        result = presentationDevice->OpenSharedResource(
+            sharedHandle,
+            __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void**>(&outputMesh->texture));
+        if (FAILED(result)) {
+            ReleaseResource(sourceMesh->outputTexture);
+            return false;
+        }
+
+        result = presentationDevice->CreateShaderResourceView(
+            outputMesh->texture,
+            nullptr,
+            &outputMesh->SRV);
         if (FAILED(result)) {
             ReleaseResource(outputMesh->texture);
+            ReleaseResource(sourceMesh->outputTexture);
             return false;
         }
     }
 
-    renderContext->CopyResource(outputMesh->texture, target->texture);
+    renderContext->CopyResource(sourceMesh->outputTexture, target->texture);
     return true;
 }
 
@@ -1154,7 +1226,7 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
     }
     renderContext->OMSetRenderTargets(0, nullptr, nullptr);
     if (!shadowsRendered) {
-        DiscardCommands(renderContext);
+        renderContext->ClearState();
         return false;
     }
 
@@ -1185,7 +1257,7 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
     std::array<ID3D11ShaderResourceView*, MeshTextureSlotCount + 1> noTextures{};
     renderContext->PSSetShaderResources(0, static_cast<UINT>(noTextures.size()), noTextures.data());
     if (!rendered) {
-        DiscardCommands(renderContext);
+        renderContext->ClearState();
         return false;
     }
     return ExecuteCommands();
@@ -1193,45 +1265,25 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
 
 bool RenderManager::ExecuteCommands()
 {
-    if (!renderContext || !immediateContext || !completionQuery) {
+    if (!renderContext || !completionQuery) {
         return false;
     }
 
-    ID3D11CommandList* commandList = nullptr;
-    const HRESULT finishResult = renderContext->FinishCommandList(FALSE, &commandList);
-    if (FAILED(finishResult) || !commandList) {
-        renderContext->ClearState();
-        logger::error("Could not finish mesh render command list: {:08X}", static_cast<std::uint32_t>(finishResult));
-        return false;
-    }
-
-    RE::BSGraphics::Renderer* renderer = RE::BSGraphics::Renderer::GetSingleton();
-    if (!renderer) {
-        commandList->Release();
-        return false;
-    }
-
-    renderer->Lock();
-    // TRUE restores every immediate-context state slot after the private
-    // command list has executed.
-    immediateContext->ExecuteCommandList(commandList, TRUE);
-    commandList->Release();
-
-    immediateContext->End(completionQuery);
+    renderContext->End(completionQuery);
+    renderContext->Flush();
     HRESULT completionResult = S_FALSE;
     while (completionResult == S_FALSE) {
-        completionResult = immediateContext->GetData(completionQuery, nullptr, 0, 0);
+        completionResult = renderContext->GetData(completionQuery, nullptr, 0, 0);
         if (completionResult == S_FALSE) {
             SwitchToThread();
         }
     }
-    renderer->Unlock();
     return SUCCEEDED(completionResult);
 }
 
 bool RenderManager::RenderLocked(MeshRenderingFrameworkAPI::Internal::IMesh* outputMesh)
 {
-    if (!outputMesh || !device || !renderContext || !immediateContext) {
+    if (!outputMesh || !presentationDevice || !device || !renderContext) {
         return false;
     }
 
@@ -1372,35 +1424,12 @@ void RenderManager::InitRenderTarget(RenderTarget* target)
     target->initialized = true;
 }
 
-bool RenderManager::Init(ID3D11Device* newDevice, ID3D11DeviceContext* newContext)
+bool RenderManager::Init(ID3D11Device* newDevice, ID3D11DeviceContext*)
 {
     std::unique_lock lock(mutex);
 
-    if (device == newDevice && immediateContext == newContext && renderContext && completionQuery) {
+    if (presentationDevice == newDevice && device && renderContext && completionQuery) {
         return InitializePipeline();
-    }
-
-    ReleasePipeline();
-    ReleaseResource(completionQuery);
-    ReleaseResource(renderContext);
-    device = newDevice;
-    immediateContext = newContext;
-
-    if (!device || !immediateContext) {
-        return false;
-    }
-
-    HRESULT result = device->CreateDeferredContext(0, &renderContext);
-    D3D11_QUERY_DESC queryDescription{};
-    queryDescription.Query = D3D11_QUERY_EVENT;
-    if (SUCCEEDED(result)) {
-        result = device->CreateQuery(&queryDescription, &completionQuery);
-    }
-    if (FAILED(result) || !InitializePipeline()) {
-        ReleasePipeline();
-        ReleaseResource(completionQuery);
-        ReleaseResource(renderContext);
-        return false;
     }
 
     for (const std::pair<const std::string, RenderTarget*>& entry : renderTarget) {
@@ -1414,6 +1443,31 @@ bool RenderManager::Init(ID3D11Device* newDevice, ID3D11DeviceContext* newContex
     for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& entry : meshes) {
         entry.second->ResetGpuResources();
     }
+
+    ReleasePipeline();
+    ReleaseResource(completionQuery);
+    ReleaseResource(renderContext);
+    ReleaseResource(device);
+    presentationDevice = newDevice;
+
+    if (!presentationDevice || !CreatePrivateDevice(presentationDevice, &device, &renderContext)) {
+        logger::error("Could not create the private mesh-rendering device");
+        return false;
+    }
+
+    D3D11_QUERY_DESC queryDescription{};
+    queryDescription.Query = D3D11_QUERY_EVENT;
+    HRESULT result = device->CreateQuery(&queryDescription, &completionQuery);
+    if (FAILED(result) || !InitializePipeline()) {
+        logger::error(
+            "Could not initialize the private mesh-rendering pipeline: {:08X}",
+            static_cast<std::uint32_t>(result));
+        ReleasePipeline();
+        ReleaseResource(completionQuery);
+        ReleaseResource(renderContext);
+        ReleaseResource(device);
+        return false;
+    }
     return true;
 }
 
@@ -1423,29 +1477,23 @@ bool RenderManager::SaveLocked(MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
         return false;
     }
 
-    if (!RenderLocked(mesh) || !mesh->SRV || !device || !immediateContext) {
+    if (!RenderLocked(mesh) || !mesh->SRV || !device || !renderContext) {
+        return false;
+    }
+
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshIterator = meshes.find(mesh);
+    if (meshIterator == meshes.end() || !meshIterator->second || !meshIterator->second->outputTexture) {
         return false;
     }
 
     std::filesystem::path path(filename);
-    ID3D11Resource* resource = nullptr;
-    mesh->SRV->GetResource(&resource);
-    if (!resource) {
-        return false;
-    }
-
     DirectX::ScratchImage image;
-    RE::BSGraphics::Renderer* renderer = RE::BSGraphics::Renderer::GetSingleton();
-    if (!renderer) {
-        resource->Release();
-        return false;
-    }
-
-    renderer->Lock();
-    const HRESULT captureResult = DirectX::CaptureTexture(device, immediateContext, resource, image);
-    renderer->Unlock();
+    const HRESULT captureResult = DirectX::CaptureTexture(
+        device,
+        renderContext,
+        meshIterator->second->outputTexture,
+        image);
     if (FAILED(captureResult)) {
-        resource->Release();
         return false;
     }
 
@@ -1458,7 +1506,6 @@ bool RenderManager::SaveLocked(MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
         saveResult = DirectX::SaveToWICFile(
             *image.GetImage(0, 0, 0), DirectX::WIC_FLAGS_FORCE_SRGB, GUID_ContainerFormatPng, wideName.c_str());
     }
-    resource->Release();
     return SUCCEEDED(saveResult);
 }
 

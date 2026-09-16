@@ -19,9 +19,8 @@ namespace Hooks
 
                 RE::BSGraphics::RendererData& runtimeData = renderer->GetRuntimeData();
                 ID3D11Device* device = reinterpret_cast<ID3D11Device*>(runtimeData.forwarder);
-                ID3D11DeviceContext* context = reinterpret_cast<ID3D11DeviceContext*>(runtimeData.context);
-                if (!RenderManager::Init(device, context)) {
-                    logger::error("Could not initialize synchronous mesh renderer");
+                if (!RenderManager::Init(device, nullptr)) {
+                    logger::error("Could not initialize private mesh renderer");
                 }
             }
 
