@@ -940,7 +940,7 @@ void Mesh::Initialize(uint32_t width, uint32_t height)
     mesh->height = height;
     mesh->id = autoIncrement++;
     lights.reserve(MeshLightLimit);
-    AddLight(-0.45f, 0.55f, 0.70f, 1.05f, 0.98f, 0.88f, 1.0f);
+    AddLight(-0.45f, 0.55f, 0.70f, 1.05f, 0.98f, 0.88f, 3.0f);
     AddLight(0.65f, 0.35f, 0.25f, 0.42f, 0.50f, 0.62f, 1.0f);
     AddLight(0.10f, -0.65f, 0.55f, 0.30f, 0.35f, 0.42f, 1.0f);
 }
