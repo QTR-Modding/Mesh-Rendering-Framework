@@ -346,6 +346,22 @@ namespace MeshRenderingFrameworkAPI {
             return textureSet;
         }
 
+        inline std::uint32_t GetSkinCoverageSlots(std::uint32_t addonSlots) {
+            constexpr std::array<RE::BGSBipedObjectForm::BipedObjectSlot, 4> anatomicalSlots{
+                RE::BGSBipedObjectForm::BipedObjectSlot::kBody,
+                RE::BGSBipedObjectForm::BipedObjectSlot::kHands,
+                RE::BGSBipedObjectForm::BipedObjectSlot::kFeet,
+                RE::BGSBipedObjectForm::BipedObjectSlot::kTail
+            };
+            for (const RE::BGSBipedObjectForm::BipedObjectSlot slot : anatomicalSlots) {
+                const std::uint32_t slotMask = static_cast<std::uint32_t>(slot);
+                if ((addonSlots & slotMask) != 0) {
+                    return slotMask;
+                }
+            }
+            return addonSlots;
+        }
+
         inline std::uint32_t AppendArmorModelPaths(RE::TESObjectARMO* armor, RE::TESRace* race, RE::SEX sex, std::vector<std::string>& paths, std::uint32_t excludedSlots = 0, bool excludeOnAnyOverlap = false,
                                                    std::vector<NpcTextureOverride>* textureOverrides = nullptr, bool textureSetIncludesBodyShape = false, RE::TESNPC* skinNpc = nullptr) {
             if (!armor || !race) {
@@ -358,8 +374,9 @@ namespace MeshRenderingFrameworkAPI {
                     continue;
                 }
                 const std::uint32_t addonSlots = static_cast<std::uint32_t>(*armorAddon->bipedModelData.bipedObjectSlots);
-                const std::uint32_t overlappingSlots = addonSlots & excludedSlots;
-                if ((excludeOnAnyOverlap && overlappingSlots != 0) || (!excludeOnAnyOverlap && (addonSlots & ~excludedSlots) == 0)) {
+                const std::uint32_t coverageSlots = textureSetIncludesBodyShape ? GetSkinCoverageSlots(addonSlots) : addonSlots;
+                const std::uint32_t overlappingSlots = coverageSlots & excludedSlots;
+                if ((excludeOnAnyOverlap && overlappingSlots != 0) || (!excludeOnAnyOverlap && (coverageSlots & ~excludedSlots) == 0)) {
                     continue;
                 }
 
@@ -444,14 +461,10 @@ namespace MeshRenderingFrameworkAPI {
                 }
             }
 
-            const std::size_t pathCountBeforeSkin = componentPaths.size();
-            AppendArmorModelPaths(npc->skin, race, sex, componentPaths, outfitSlots, true, &textureOverrides, true);
-            if (componentPaths.size() == pathCountBeforeSkin) {
-                AppendArmorModelPaths(race->skin, race, sex, componentPaths, outfitSlots, true, &textureOverrides, true);
-            }
-            if (componentPaths.size() == pathCountBeforeSkin) {
-                AppendArmorModelPaths(npc->farSkin, race, sex, componentPaths, outfitSlots, true, &textureOverrides, true);
-            }
+            std::uint32_t coveredSlots = outfitSlots;
+            coveredSlots |= AppendArmorModelPaths(npc->skin, race, sex, componentPaths, coveredSlots, true, &textureOverrides, true);
+            coveredSlots |= AppendArmorModelPaths(race->skin, race, sex, componentPaths, coveredSlots, true, &textureOverrides, true);
+            coveredSlots |= AppendArmorModelPaths(npc->farSkin, race, sex, componentPaths, coveredSlots, true, &textureOverrides, true);
 
             bool addedFaceGen = false;
             if (!actor) {
