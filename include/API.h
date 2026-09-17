@@ -41,5 +41,51 @@ FUNCTION_PREFIX bool IMesh_SetTextureSet(
     std::uint32_t texturePathCount,
     bool modelSpaceNormals,
     bool includeBodyShape);
+FUNCTION_PREFIX std::uint32_t IMesh_GetLightCount(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::ILight* IMesh_GetLight(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    std::uint32_t lightIndex);
+FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::ILight* IMesh_AddLight(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    float directionX,
+    float directionY,
+    float directionZ,
+    float red,
+    float green,
+    float blue,
+    float strength);
+FUNCTION_PREFIX bool IMesh_ClearLights(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+FUNCTION_PREFIX bool IMesh_SetExposure(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    float exposure);
+FUNCTION_PREFIX bool IMesh_GetExposure(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    float* exposure);
+FUNCTION_PREFIX bool ILight_SetDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float x,
+    float y,
+    float z);
+FUNCTION_PREFIX bool ILight_GetDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* x,
+    float* y,
+    float* z);
+FUNCTION_PREFIX bool ILight_SetColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float red,
+    float green,
+    float blue);
+FUNCTION_PREFIX bool ILight_GetColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* red,
+    float* green,
+    float* blue);
+FUNCTION_PREFIX bool ILight_SetStrength(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float strength);
+FUNCTION_PREFIX bool ILight_GetStrength(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* strength);
 FUNCTION_PREFIX void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
 FUNCTION_PREFIX MeshRenderingFrameworkAPI::Internal::IMesh* IMesh_Save(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, const char* filePath);

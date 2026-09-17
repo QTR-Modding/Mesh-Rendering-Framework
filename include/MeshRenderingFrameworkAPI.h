@@ -26,6 +26,11 @@ namespace MeshRenderingFrameworkAPI {
     };
 
     namespace Internal {
+        class ILight {
+        public:
+            uint64_t id = 0;
+        };
+
         class IMesh {
         public:
             uint64_t id;
@@ -108,6 +113,77 @@ namespace MeshRenderingFrameworkAPI {
         inline bool __stdcall IMesh_SetTextureSet(IMesh* mesh, const char* nifPath, const char* const* texturePaths, std::uint32_t texturePathCount, bool modelSpaceNormals, bool includeBodyShape) {
             auto function = GetFunction<decltype(&IMesh_SetTextureSet)>("IMesh_SetTextureSet");
             return function && function(mesh, nifPath, texturePaths, texturePathCount, modelSpaceNormals, includeBodyShape);
+        }
+
+        inline std::uint32_t __stdcall IMesh_GetLightCount(IMesh* mesh) {
+            auto function = GetFunction<decltype(&IMesh_GetLightCount)>("IMesh_GetLightCount");
+            return function ? function(mesh) : 0;
+        }
+
+        inline ILight* __stdcall IMesh_GetLight(IMesh* mesh, std::uint32_t lightIndex) {
+            auto function = GetFunction<decltype(&IMesh_GetLight)>("IMesh_GetLight");
+            return function ? function(mesh, lightIndex) : nullptr;
+        }
+
+        inline ILight* __stdcall IMesh_AddLight(
+            IMesh* mesh,
+            float directionX,
+            float directionY,
+            float directionZ,
+            float red,
+            float green,
+            float blue,
+            float strength)
+        {
+            auto function = GetFunction<decltype(&IMesh_AddLight)>("IMesh_AddLight");
+            return function
+                ? function(mesh, directionX, directionY, directionZ, red, green, blue, strength)
+                : nullptr;
+        }
+
+        inline bool __stdcall IMesh_ClearLights(IMesh* mesh) {
+            auto function = GetFunction<decltype(&IMesh_ClearLights)>("IMesh_ClearLights");
+            return function && function(mesh);
+        }
+
+        inline bool __stdcall IMesh_SetExposure(IMesh* mesh, float exposure) {
+            auto function = GetFunction<decltype(&IMesh_SetExposure)>("IMesh_SetExposure");
+            return function && function(mesh, exposure);
+        }
+
+        inline bool __stdcall IMesh_GetExposure(IMesh* mesh, float* exposure) {
+            auto function = GetFunction<decltype(&IMesh_GetExposure)>("IMesh_GetExposure");
+            return function && function(mesh, exposure);
+        }
+
+        inline bool __stdcall ILight_SetDirection(ILight* light, float x, float y, float z) {
+            auto function = GetFunction<decltype(&ILight_SetDirection)>("ILight_SetDirection");
+            return function && function(light, x, y, z);
+        }
+
+        inline bool __stdcall ILight_GetDirection(ILight* light, float* x, float* y, float* z) {
+            auto function = GetFunction<decltype(&ILight_GetDirection)>("ILight_GetDirection");
+            return function && function(light, x, y, z);
+        }
+
+        inline bool __stdcall ILight_SetColor(ILight* light, float red, float green, float blue) {
+            auto function = GetFunction<decltype(&ILight_SetColor)>("ILight_SetColor");
+            return function && function(light, red, green, blue);
+        }
+
+        inline bool __stdcall ILight_GetColor(ILight* light, float* red, float* green, float* blue) {
+            auto function = GetFunction<decltype(&ILight_GetColor)>("ILight_GetColor");
+            return function && function(light, red, green, blue);
+        }
+
+        inline bool __stdcall ILight_SetStrength(ILight* light, float strength) {
+            auto function = GetFunction<decltype(&ILight_SetStrength)>("ILight_SetStrength");
+            return function && function(light, strength);
+        }
+
+        inline bool __stdcall ILight_GetStrength(ILight* light, float* strength) {
+            auto function = GetFunction<decltype(&ILight_GetStrength)>("ILight_GetStrength");
+            return function && function(light, strength);
         }
 
         inline void __stdcall IMesh_Delete(IMesh* mesh) {
@@ -655,6 +731,42 @@ namespace MeshRenderingFrameworkAPI {
                 return;
             }
             mesh->alwaysUpdate = value;
+        }
+        std::uint32_t GetLightCount() const {
+            return mesh ? Internal::IMesh_GetLightCount(mesh) : 0;
+        }
+        Internal::ILight* GetLight(std::uint32_t lightIndex) const {
+            return mesh ? Internal::IMesh_GetLight(mesh, lightIndex) : nullptr;
+        }
+        Internal::ILight* AddLight(
+            float directionX,
+            float directionY,
+            float directionZ,
+            float red,
+            float green,
+            float blue,
+            float strength = 1.0f)
+        {
+            return mesh
+                ? Internal::IMesh_AddLight(
+                      mesh,
+                      directionX,
+                      directionY,
+                      directionZ,
+                      red,
+                      green,
+                      blue,
+                      strength)
+                : nullptr;
+        }
+        bool ClearLights() {
+            return mesh && Internal::IMesh_ClearLights(mesh);
+        }
+        bool SetExposure(float exposure) {
+            return mesh && Internal::IMesh_SetExposure(mesh, exposure);
+        }
+        bool GetExposure(float& exposure) const {
+            return mesh && Internal::IMesh_GetExposure(mesh, &exposure);
         }
         bool SetBoneLocalPose(const char* const* boneNames, const std::int16_t* parentIndices, const BoneTransform* transforms, uint32_t transformCount) {
             if (!mesh) {

@@ -77,17 +77,18 @@ namespace
         DirectX::XMFLOAT4X4 worldViewProjection;
         DirectX::XMFLOAT4X4 world;
         DirectX::XMFLOAT4 cameraPosition;
-        DirectX::XMFLOAT4 lightDirections[3];
-        DirectX::XMFLOAT4 lightColors[3];
+        DirectX::XMFLOAT4 lightDirections[MeshLightLimit];
+        DirectX::XMFLOAT4 lightColors[MeshLightLimit];
         DirectX::XMFLOAT4 ambientColor;
-        DirectX::XMFLOAT4X4 lightViewProjections[3];
+        DirectX::XMFLOAT4X4 lightViewProjections[MeshLightLimit];
         DirectX::XMFLOAT4 shadowParameters;
+        DirectX::XMFLOAT4 renderParameters;
     };
 
-    static_assert(sizeof(SceneConstants) == 464);
+    static_assert(sizeof(SceneConstants) == 960);
 
     constexpr UINT shadowMapResolution = 1024;
-    constexpr std::size_t shadowLightCount = 3;
+    constexpr std::size_t shadowLightCount = MeshLightLimit;
 
     constexpr const char* vertexShaderSource = R"(
         cbuffer SceneConstants : register(b0)
@@ -149,11 +150,12 @@ namespace
             row_major float4x4 worldViewProjection;
             row_major float4x4 world;
             float4 cameraPosition;
-            float4 lightDirections[3];
-            float4 lightColors[3];
+            float4 lightDirections[8];
+            float4 lightColors[8];
             float4 ambientColor;
-            row_major float4x4 lightViewProjections[3];
+            row_major float4x4 lightViewProjections[8];
             float4 shadowParameters;
+            float4 renderParameters;
         };
 
         cbuffer MaterialConstants : register(b1)
@@ -257,7 +259,8 @@ namespace
                 }
                 shadowAmount /= 9.0f;
             }
-            return (diffuseLight + specularLight) * lightColors[lightIndex].rgb * shadowAmount;
+            return (diffuseLight + specularLight) *
+                lightColors[lightIndex].rgb * lightColors[lightIndex].a * shadowAmount;
         }
 
         float4 main(PixelInput input, bool frontFacing : SV_IsFrontFace) : SV_TARGET
@@ -326,11 +329,20 @@ namespace
             specularMask *= specularEnabled;
 
             float3 color = albedo * ambientColor.rgb;
-            color += EvaluateLight(normal, viewDirection, input.worldPosition, albedo, specularMask, 0);
-            color += EvaluateLight(normal, viewDirection, input.worldPosition, albedo, specularMask, 1);
-            color += EvaluateLight(normal, viewDirection, input.worldPosition, albedo, specularMask, 2);
+            [loop]
+            for (uint lightIndex = 0; lightIndex < (uint)renderParameters.y; ++lightIndex) {
+                color += EvaluateLight(
+                    normal,
+                    viewDirection,
+                    input.worldPosition,
+                    albedo,
+                    specularMask,
+                    lightIndex);
+            }
 
-            float backFacingLight = saturate(dot(-normal, normalize(lightDirections[0].xyz)));
+            float backFacingLight = renderParameters.y > 0.5f
+                ? saturate(dot(-normal, normalize(lightDirections[0].xyz)))
+                : 0.0f;
             if (hasSubsurfaceMap > 0.5f && auxiliaryMapMode < 3.5f) {
                 color += subsurfaceTexture.Sample(materialSampler, uv).rgb * albedo * backFacingLight * 0.35f;
             }
@@ -366,11 +378,13 @@ namespace
             // would wash out the material colors. A luminance-space Reinhard
             // curve preserves both hue and shading above 1.0 instead of clipping
             // bright skin/tint materials to a single flat value.
-            float3 positiveColor = max(color, 0.0f);
-            float luminance = max(dot(positiveColor, float3(0.2126f, 0.7152f, 0.0722f)), 0.00001f);
+            float3 positiveColor = max(color * renderParameters.x, 0.0f);
+            float luminance = max(dot(positiveColor, float3(0.2126f, 0.7152f, 0.0722f)), 0.0f);
             float mappedLuminance = luminance / (1.0f + luminance);
             float displayLuminance = pow(mappedLuminance, 1.0f / 2.2f);
-            float3 displayColor = saturate(positiveColor * (displayLuminance / luminance));
+            float3 displayColor = luminance > 0.0f
+                ? saturate(positiveColor * (displayLuminance / luminance))
+                : float3(0.0f, 0.0f, 0.0f);
             float displaySaturation = faceOrSkin > 0.5f ? 0.5f : 0.5f;
             displayColor = lerp(displayLuminance.xxx, displayColor, displaySaturation);
             return float4(displayColor, outputAlpha);
@@ -707,6 +721,193 @@ bool RenderManager::SetTextureSet(
         includeBodyShape);
 }
 
+std::uint32_t RenderManager::GetLightCount(MeshRenderingFrameworkAPI::Internal::IMesh* mesh)
+{
+    if (!mesh) {
+        return 0;
+    }
+    std::shared_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::const_iterator meshEntry = meshes.find(mesh);
+    return meshEntry != meshes.end() && meshEntry->second
+        ? meshEntry->second->GetLightCount()
+        : 0;
+}
+
+MeshRenderingFrameworkAPI::Internal::ILight* RenderManager::GetLight(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    std::uint32_t lightIndex)
+{
+    if (!mesh) {
+        return nullptr;
+    }
+    std::shared_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::const_iterator meshEntry = meshes.find(mesh);
+    return meshEntry != meshes.end() && meshEntry->second
+        ? meshEntry->second->GetLight(lightIndex)
+        : nullptr;
+}
+
+MeshRenderingFrameworkAPI::Internal::ILight* RenderManager::AddLight(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    float directionX,
+    float directionY,
+    float directionZ,
+    float red,
+    float green,
+    float blue,
+    float strength)
+{
+    if (!mesh) {
+        return nullptr;
+    }
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshEntry = meshes.find(mesh);
+    return meshEntry != meshes.end() && meshEntry->second
+        ? meshEntry->second->AddLight(
+              directionX,
+              directionY,
+              directionZ,
+              red,
+              green,
+              blue,
+              strength)
+        : nullptr;
+}
+
+bool RenderManager::ClearLights(MeshRenderingFrameworkAPI::Internal::IMesh* mesh)
+{
+    if (!mesh) {
+        return false;
+    }
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshEntry = meshes.find(mesh);
+    return meshEntry != meshes.end() && meshEntry->second && meshEntry->second->ClearLights();
+}
+
+bool RenderManager::SetExposure(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, float exposure)
+{
+    if (!mesh) {
+        return false;
+    }
+    std::unique_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::iterator meshEntry = meshes.find(mesh);
+    return meshEntry != meshes.end() && meshEntry->second && meshEntry->second->SetExposure(exposure);
+}
+
+bool RenderManager::GetExposure(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, float* exposure)
+{
+    if (!mesh || !exposure) {
+        return false;
+    }
+    std::shared_lock lock(mutex);
+    std::map<MeshRenderingFrameworkAPI::Internal::IMesh*, Mesh*>::const_iterator meshEntry = meshes.find(mesh);
+    return meshEntry != meshes.end() && meshEntry->second && meshEntry->second->GetExposure(exposure);
+}
+
+bool RenderManager::SetLightDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float x,
+    float y,
+    float z)
+{
+    if (!light) {
+        return false;
+    }
+    std::unique_lock lock(mutex);
+    for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& meshEntry : meshes) {
+        if (meshEntry.second && meshEntry.second->SetLightDirection(light, x, y, z)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RenderManager::GetLightDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* x,
+    float* y,
+    float* z)
+{
+    if (!light || !x || !y || !z) {
+        return false;
+    }
+    std::shared_lock lock(mutex);
+    for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& meshEntry : meshes) {
+        if (meshEntry.second && meshEntry.second->GetLightDirection(light, x, y, z)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RenderManager::SetLightColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float red,
+    float green,
+    float blue)
+{
+    if (!light) {
+        return false;
+    }
+    std::unique_lock lock(mutex);
+    for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& meshEntry : meshes) {
+        if (meshEntry.second && meshEntry.second->SetLightColor(light, red, green, blue)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RenderManager::GetLightColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* red,
+    float* green,
+    float* blue)
+{
+    if (!light || !red || !green || !blue) {
+        return false;
+    }
+    std::shared_lock lock(mutex);
+    for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& meshEntry : meshes) {
+        if (meshEntry.second && meshEntry.second->GetLightColor(light, red, green, blue)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RenderManager::SetLightStrength(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float strength)
+{
+    if (!light) {
+        return false;
+    }
+    std::unique_lock lock(mutex);
+    for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& meshEntry : meshes) {
+        if (meshEntry.second && meshEntry.second->SetLightStrength(light, strength)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RenderManager::GetLightStrength(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* strength)
+{
+    if (!light || !strength) {
+        return false;
+    }
+    std::shared_lock lock(mutex);
+    for (const std::pair<MeshRenderingFrameworkAPI::Internal::IMesh* const, Mesh*>& meshEntry : meshes) {
+        if (meshEntry.second && meshEntry.second->GetLightStrength(light, strength)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* target)
 {
     if (!sourceMesh || !sourceMesh->mesh || !target || !target->texture ||
@@ -789,12 +990,16 @@ bool RenderManager::CopyRenderTargetToMesh(Mesh* sourceMesh, RenderTarget* targe
 
 bool RenderManager::InitializePipeline()
 {
+    const bool hasAllShadowDepthViews = std::all_of(
+        shadowDepthViews.begin(),
+        shadowDepthViews.end(),
+        [](ID3D11DepthStencilView* view) { return view != nullptr; });
     if (vertexShader && pixelShader && shadowVertexShader && shadowPixelShader && inputLayout &&
         constantBuffer && samplerState && shadowSamplerState && materialConstantBuffer &&
         rasterizerState && shadowRasterizerState && opaqueBlendState && alphaBlendState &&
         depthWriteState && depthReadState && fallbackWhiteTexture && fallbackNormalTexture &&
         fallbackBlackTexture && fallbackEnvironmentTexture && shadowTexture && shadowTextureView &&
-        shadowDepthViews[0] && shadowDepthViews[1] && shadowDepthViews[2]) {
+        hasAllShadowDepthViews) {
         return true;
     }
     if (!device) {
@@ -1108,18 +1313,31 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
         &constants.worldViewProjection,
         world * view * projection);
     constants.cameraPosition = DirectX::XMFLOAT4(0.0f, cameraY, 0.0f, 1.0f);
-    constants.lightDirections[0] = DirectX::XMFLOAT4(-0.45f, 0.55f, 0.70f, 0.0f);
-    constants.lightDirections[1] = DirectX::XMFLOAT4(0.65f, 0.35f, 0.25f, 0.0f);
-    constants.lightDirections[2] = DirectX::XMFLOAT4(0.10f, -0.65f, 0.55f, 0.0f);
-    constants.lightColors[0] = DirectX::XMFLOAT4(1.05f, 0.98f, 0.88f, 1.0f);
-    constants.lightColors[1] = DirectX::XMFLOAT4(0.42f, 0.50f, 0.62f, 1.0f);
-    constants.lightColors[2] = DirectX::XMFLOAT4(0.30f, 0.35f, 0.42f, 1.0f);
+    const std::size_t lightCount = std::min(sourceMesh->lights.size(), shadowLightCount);
+    for (std::size_t lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
+        const MeshLight& light = sourceMesh->lights[lightIndex];
+        constants.lightDirections[lightIndex] = DirectX::XMFLOAT4(
+            light.direction.x,
+            light.direction.y,
+            light.direction.z,
+            0.0f);
+        constants.lightColors[lightIndex] = DirectX::XMFLOAT4(
+            light.color.x,
+            light.color.y,
+            light.color.z,
+            light.strength);
+    }
     constants.ambientColor = DirectX::XMFLOAT4(0.30f, 0.32f, 0.36f, 1.0f);
     constants.shadowParameters = DirectX::XMFLOAT4(
         1.0f / static_cast<float>(shadowMapResolution),
         1.5f,
         0.00035f,
         0.0025f);
+    constants.renderParameters = DirectX::XMFLOAT4(
+        sourceMesh->exposure,
+        static_cast<float>(lightCount),
+        0.0f,
+        0.0f);
 
     float localShadowRadiusSquared = 0.0f;
     for (const MeshPart& part : sourceMesh->parts) {
@@ -1139,8 +1357,8 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
         sourceMesh->mesh->position.y,
         sourceMesh->mesh->position.z,
         1.0f);
-    DirectX::XMMATRIX lightViewProjections[shadowLightCount];
-    for (std::size_t lightIndex = 0; lightIndex < shadowLightCount; ++lightIndex) {
+    DirectX::XMMATRIX lightViewProjections[shadowLightCount]{};
+    for (std::size_t lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
         const DirectX::XMVECTOR lightDirection = DirectX::XMVector3Normalize(
             DirectX::XMLoadFloat4(&constants.lightDirections[lightIndex]));
         const float upAlignment = std::abs(DirectX::XMVectorGetX(
@@ -1197,7 +1415,7 @@ bool RenderManager::RenderMesh(Mesh* sourceMesh, RenderTarget* target)
     renderContext->PSSetShader(shadowPixelShader, nullptr, 0);
 
     bool shadowsRendered = true;
-    for (std::size_t lightIndex = 0; lightIndex < shadowLightCount; ++lightIndex) {
+    for (std::size_t lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
         renderContext->OMSetRenderTargets(0, nullptr, shadowDepthViews[lightIndex]);
         renderContext->ClearDepthStencilView(
             shadowDepthViews[lightIndex],

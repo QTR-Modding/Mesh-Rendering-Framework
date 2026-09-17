@@ -143,6 +143,100 @@ bool IMesh_SetTextureSet(
         includeBodyShape);
 }
 
+std::uint32_t IMesh_GetLightCount(MeshRenderingFrameworkAPI::Internal::IMesh* mesh)
+{
+    return RenderManager::GetLightCount(mesh);
+}
+
+MeshRenderingFrameworkAPI::Internal::ILight* IMesh_GetLight(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    std::uint32_t lightIndex)
+{
+    return RenderManager::GetLight(mesh, lightIndex);
+}
+
+MeshRenderingFrameworkAPI::Internal::ILight* IMesh_AddLight(
+    MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+    float directionX,
+    float directionY,
+    float directionZ,
+    float red,
+    float green,
+    float blue,
+    float strength)
+{
+    return RenderManager::AddLight(
+        mesh,
+        directionX,
+        directionY,
+        directionZ,
+        red,
+        green,
+        blue,
+        strength);
+}
+
+bool IMesh_ClearLights(MeshRenderingFrameworkAPI::Internal::IMesh* mesh)
+{
+    return RenderManager::ClearLights(mesh);
+}
+
+bool IMesh_SetExposure(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, float exposure)
+{
+    return RenderManager::SetExposure(mesh, exposure);
+}
+
+bool IMesh_GetExposure(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, float* exposure)
+{
+    return RenderManager::GetExposure(mesh, exposure);
+}
+
+bool ILight_SetDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float x,
+    float y,
+    float z)
+{
+    return RenderManager::SetLightDirection(light, x, y, z);
+}
+
+bool ILight_GetDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* x,
+    float* y,
+    float* z)
+{
+    return RenderManager::GetLightDirection(light, x, y, z);
+}
+
+bool ILight_SetColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float red,
+    float green,
+    float blue)
+{
+    return RenderManager::SetLightColor(light, red, green, blue);
+}
+
+bool ILight_GetColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* red,
+    float* green,
+    float* blue)
+{
+    return RenderManager::GetLightColor(light, red, green, blue);
+}
+
+bool ILight_SetStrength(MeshRenderingFrameworkAPI::Internal::ILight* light, float strength)
+{
+    return RenderManager::SetLightStrength(light, strength);
+}
+
+bool ILight_GetStrength(MeshRenderingFrameworkAPI::Internal::ILight* light, float* strength)
+{
+    return RenderManager::GetLightStrength(light, strength);
+}
+
 void IMesh_Delete(MeshRenderingFrameworkAPI::Internal::IMesh* mesh) { 
     RenderManager::Delete(mesh);
 }

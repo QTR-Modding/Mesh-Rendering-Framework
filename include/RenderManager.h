@@ -57,7 +57,7 @@ class RenderManager {
     static inline ID3D11ShaderResourceView* fallbackEnvironmentTexture = nullptr;
     static inline ID3D11Texture2D* shadowTexture = nullptr;
     static inline ID3D11ShaderResourceView* shadowTextureView = nullptr;
-    static inline std::array<ID3D11DepthStencilView*, 3> shadowDepthViews{};
+    static inline std::array<ID3D11DepthStencilView*, MeshLightLimit> shadowDepthViews{};
 
     static bool InitializePipeline();
     static void ReleasePipeline();
@@ -107,6 +107,48 @@ public:
         std::uint32_t texturePathCount,
         bool modelSpaceNormals,
         bool includeBodyShape);
+    static std::uint32_t GetLightCount(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+    static MeshRenderingFrameworkAPI::Internal::ILight* GetLight(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+        std::uint32_t lightIndex);
+    static MeshRenderingFrameworkAPI::Internal::ILight* AddLight(
+        MeshRenderingFrameworkAPI::Internal::IMesh* mesh,
+        float directionX,
+        float directionY,
+        float directionZ,
+        float red,
+        float green,
+        float blue,
+        float strength);
+    static bool ClearLights(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
+    static bool SetExposure(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, float exposure);
+    static bool GetExposure(MeshRenderingFrameworkAPI::Internal::IMesh* mesh, float* exposure);
+    static bool SetLightDirection(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float x,
+        float y,
+        float z);
+    static bool GetLightDirection(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float* x,
+        float* y,
+        float* z);
+    static bool SetLightColor(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float red,
+        float green,
+        float blue);
+    static bool GetLightColor(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float* red,
+        float* green,
+        float* blue);
+    static bool SetLightStrength(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float strength);
+    static bool GetLightStrength(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float* strength);
 
     static bool Render(MeshRenderingFrameworkAPI::Internal::IMesh* mesh);
     static void RenderPending();

@@ -939,6 +939,10 @@ void Mesh::Initialize(uint32_t width, uint32_t height)
     mesh->width = width;
     mesh->height = height;
     mesh->id = autoIncrement++;
+    lights.reserve(MeshLightLimit);
+    AddLight(-0.45f, 0.55f, 0.70f, 1.05f, 0.98f, 0.88f, 1.0f);
+    AddLight(0.65f, 0.35f, 0.25f, 0.42f, 0.50f, 0.62f, 1.0f);
+    AddLight(0.10f, -0.65f, 0.55f, 0.30f, 0.35f, 0.42f, 1.0f);
 }
 
 bool Mesh::Load(const char* nifPath)
@@ -1677,6 +1681,10 @@ Mesh::Mesh(
 
 Mesh::~Mesh()
 {
+    for (MeshLight& light : lights) {
+        delete light.light;
+    }
+    lights.clear();
     if (mesh) {
         ReleaseResource(mesh->SRV);
         ReleaseResource(mesh->texture);
@@ -1684,6 +1692,193 @@ Mesh::~Mesh()
     }
     ReleaseResource(outputTexture);
     delete mesh;
+}
+
+std::uint32_t Mesh::GetLightCount() const
+{
+    return static_cast<std::uint32_t>(lights.size());
+}
+
+MeshRenderingFrameworkAPI::Internal::ILight* Mesh::GetLight(std::uint32_t lightIndex) const
+{
+    return lightIndex < lights.size() ? lights[lightIndex].light : nullptr;
+}
+
+MeshRenderingFrameworkAPI::Internal::ILight* Mesh::AddLight(
+    float directionX,
+    float directionY,
+    float directionZ,
+    float red,
+    float green,
+    float blue,
+    float strength)
+{
+    const float directionLengthSquared =
+        directionX * directionX + directionY * directionY + directionZ * directionZ;
+    if (!mesh || lights.size() >= MeshLightLimit ||
+        !std::isfinite(directionX) || !std::isfinite(directionY) || !std::isfinite(directionZ) ||
+        !std::isfinite(directionLengthSquared) || directionLengthSquared <= 0.0f ||
+        !std::isfinite(red) || !std::isfinite(green) || !std::isfinite(blue) ||
+        red < 0.0f || green < 0.0f || blue < 0.0f ||
+        !std::isfinite(strength) || strength < 0.0f) {
+        return nullptr;
+    }
+
+    MeshLight lightData{};
+    lightData.light = new MeshRenderingFrameworkAPI::Internal::ILight();
+    lightData.light->id = lightAutoIncrement++;
+    lightData.direction = RE::NiPoint3{directionX, directionY, directionZ};
+    lightData.color = RE::NiPoint3{red, green, blue};
+    lightData.strength = strength;
+    lights.push_back(lightData);
+    mesh->mustUpdate = true;
+    return lightData.light;
+}
+
+bool Mesh::ClearLights()
+{
+    if (!mesh) {
+        return false;
+    }
+    for (MeshLight& light : lights) {
+        delete light.light;
+    }
+    lights.clear();
+    mesh->mustUpdate = true;
+    return true;
+}
+
+bool Mesh::SetExposure(float value)
+{
+    if (!mesh || !std::isfinite(value) || value < 0.0f) {
+        return false;
+    }
+    exposure = value;
+    mesh->mustUpdate = true;
+    return true;
+}
+
+bool Mesh::GetExposure(float* value) const
+{
+    if (!mesh || !value) {
+        return false;
+    }
+    *value = exposure;
+    return true;
+}
+
+bool Mesh::SetLightDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float x,
+    float y,
+    float z)
+{
+    const float directionLengthSquared = x * x + y * y + z * z;
+    if (!mesh || !light || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+        !std::isfinite(directionLengthSquared) || directionLengthSquared <= 0.0f) {
+        return false;
+    }
+    for (MeshLight& lightData : lights) {
+        if (lightData.light == light) {
+            lightData.direction = RE::NiPoint3{x, y, z};
+            mesh->mustUpdate = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Mesh::GetLightDirection(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* x,
+    float* y,
+    float* z) const
+{
+    if (!mesh || !light || !x || !y || !z) {
+        return false;
+    }
+    for (const MeshLight& lightData : lights) {
+        if (lightData.light == light) {
+            *x = lightData.direction.x;
+            *y = lightData.direction.y;
+            *z = lightData.direction.z;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Mesh::SetLightColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float red,
+    float green,
+    float blue)
+{
+    if (!mesh || !light || !std::isfinite(red) || !std::isfinite(green) ||
+        !std::isfinite(blue) || red < 0.0f || green < 0.0f || blue < 0.0f) {
+        return false;
+    }
+    for (MeshLight& lightData : lights) {
+        if (lightData.light == light) {
+            lightData.color = RE::NiPoint3{red, green, blue};
+            mesh->mustUpdate = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Mesh::GetLightColor(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* red,
+    float* green,
+    float* blue) const
+{
+    if (!mesh || !light || !red || !green || !blue) {
+        return false;
+    }
+    for (const MeshLight& lightData : lights) {
+        if (lightData.light == light) {
+            *red = lightData.color.x;
+            *green = lightData.color.y;
+            *blue = lightData.color.z;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Mesh::SetLightStrength(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float strength)
+{
+    if (!mesh || !light || !std::isfinite(strength) || strength < 0.0f) {
+        return false;
+    }
+    for (MeshLight& lightData : lights) {
+        if (lightData.light == light) {
+            lightData.strength = strength;
+            mesh->mustUpdate = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Mesh::GetLightStrength(
+    MeshRenderingFrameworkAPI::Internal::ILight* light,
+    float* strength) const
+{
+    if (!mesh || !light || !strength) {
+        return false;
+    }
+    for (const MeshLight& lightData : lights) {
+        if (lightData.light == light) {
+            *strength = lightData.strength;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Mesh::IsValid() const

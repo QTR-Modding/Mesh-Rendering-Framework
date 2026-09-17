@@ -44,6 +44,14 @@ enum class MeshTextureSlot : std::size_t {
 };
 
 inline constexpr std::size_t MeshTextureSlotCount = static_cast<std::size_t>(MeshTextureSlot::Count);
+inline constexpr std::size_t MeshLightLimit = 8;
+
+struct MeshLight {
+    MeshRenderingFrameworkAPI::Internal::ILight* light = nullptr;
+    RE::NiPoint3 direction{};
+    RE::NiPoint3 color{1.0f, 1.0f, 1.0f};
+    float strength = 1.0f;
+};
 
 enum class MeshAlphaMode {
     Opaque,
@@ -153,6 +161,7 @@ struct MeshPart {
 class Mesh {
 private:
     static inline uint64_t autoIncrement = 0;
+    static inline uint64_t lightAutoIncrement = 0;
     float boundingRadius = 0.0f;
     RE::NiPoint3 animationCenter{};
     RE::NiMatrix3 animationRotation{};
@@ -181,6 +190,8 @@ public:
     std::string sourcePath;
     std::vector<MeshPart> parts;
     std::unordered_map<std::string, MeshBoneFrame> boneFrames;
+    std::vector<MeshLight> lights;
+    float exposure = 1.0f;
 
     bool IsValid() const;
     bool InitializeGpuResources(ID3D11Device* device);
@@ -200,6 +211,41 @@ public:
         std::uint32_t texturePathCount,
         bool modelSpaceNormals,
         bool includeBodyShape);
+    std::uint32_t GetLightCount() const;
+    MeshRenderingFrameworkAPI::Internal::ILight* GetLight(std::uint32_t lightIndex) const;
+    MeshRenderingFrameworkAPI::Internal::ILight* AddLight(
+        float directionX,
+        float directionY,
+        float directionZ,
+        float red,
+        float green,
+        float blue,
+        float strength);
+    bool ClearLights();
+    bool SetExposure(float value);
+    bool GetExposure(float* value) const;
+    bool SetLightDirection(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float x,
+        float y,
+        float z);
+    bool GetLightDirection(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float* x,
+        float* y,
+        float* z) const;
+    bool SetLightColor(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float red,
+        float green,
+        float blue);
+    bool GetLightColor(
+        MeshRenderingFrameworkAPI::Internal::ILight* light,
+        float* red,
+        float* green,
+        float* blue) const;
+    bool SetLightStrength(MeshRenderingFrameworkAPI::Internal::ILight* light, float strength);
+    bool GetLightStrength(MeshRenderingFrameworkAPI::Internal::ILight* light, float* strength) const;
     bool UpdateAnimation();
     void Draw(
         ID3D11DeviceContext* context,
